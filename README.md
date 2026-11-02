@@ -2,10 +2,6 @@
 
 Cocos Creator **3.8.8** 项目。选关 → 自动战斗 → 投骰判定 → 击败后随机刷下一个敌人 → 阵亡弹窗退出。
 
-![UI 布局示意](docs/layout.png)
-
-> 上图是按 `BattleGame.ts` 里的坐标用 `docs/gen_layout.py` 画的近似稿（实际渲染以编辑器为准，重新生成：`python docs/gen_layout.py`）。
-
 ---
 
 ## 1. 怎么跑起来
@@ -37,7 +33,7 @@ Cocos Creator **3.8.8** 项目。选关 → 自动战斗 → 投骰判定 → �
 ### 3.1 命中判定
 
 ```
-阈值 T = floor( 6 + (攻击方敏捷 - 防守方敏捷) / 关卡难度 )
+阈值 T = floor( 6 - (攻击方敏捷 - 防守方敏捷) / 关卡难度 )   ← 默认 AGILITY_DIRECTION = -1，见 3.2
 骰子和 = 2            → 必定失败
 骰子和 = 12           → 必定成功
 3 <= 骰子和 <= 11     → 骰子和 > T 则命中，否则未命中
@@ -47,21 +43,22 @@ Cocos Creator **3.8.8** 项目。选关 → 自动战斗 → 投骰判定 → �
 - 基线按你的要求由 `12` 改成 `6`：双方敏捷相同、难度 1 时阈值 = 6，命中率 = 21/36 ≈ **58.3%**。
 - 改动入口：`assets/scripts/BattleCore.ts` 顶部的 `HIT_BASE`（默认 6）。
 
-### 3.2 ⚠️ 关于敏捷方向（建议看一眼）
+### 3.2 ⚠️ 敏捷方向（这个开关翻过一次，务必看一眼）
 
-按公式原文 `Δ = 攻方敏捷 - 守方敏捷`，阈值越大越难命中，所以：
-
-- **敏捷高 = 阈值高 = 更难打中别人，同时对方阈值变低 = 更容易被打中**；
-- 也就是「敏捷 +1」在这个方向上反而是负面效果。
-
-所以 `BattleCore.ts` 里留了一个开关：
+`BattleCore.ts` 里有个开关：
 
 ```ts
-export const AGILITY_DIRECTION = 1;   // 1 = 严格按需求原文；-1 = 敏捷越高越强（直觉版）
+export const AGILITY_DIRECTION = -1;  // -1 = 敏捷越高越强（当前默认）；1 = 严格按需求原文
 ```
 
-想改成「敏捷越高越强」，把 `1` 改成 `-1` 即可，其余代码不用动。
-当前默认是 `1`（按你的说法只把 12 改成 6），因此 `Agility_up` 掉落严格按需求实现。
+- `+1`（需求原文写法）：阈值 = `6 + (攻方敏捷 - 守方敏捷)/难度` —— **敏捷高的反而更难命中、更容易被打中**，
+  `Agility_up` 掉落会变成负面效果。
+- `-1`（当前默认）：阈值 = `6 - (攻方敏捷 - 守方敏捷)/难度` —— 敏捷越高越容易命中、越难被打中，符合直觉。
+
+为什么默认是 `-1`：按 `+1` 时玩家（敏捷 6）打狐狸（敏捷 3）阈值是 9，命中率只有 **16.7%**，
+而狐狸打玩家是 **91.7%**，一进 forest 基本必输（实测第一只怪就能把玩家打死）。
+翻成 `-1` 后玩家打狐狸 91.7%、狐狸打玩家 8.3%，forest 能连打七八只。
+想严格按原文（敏捷高吃亏）改回 `1` 即可，其余代码不用动。
 
 ### 3.3 伤害
 
@@ -85,7 +82,14 @@ export const AGILITY_DIRECTION = 1;   // 1 = 严格按需求原文；-1 = 敏捷
 
 ## 4. 配置文件
 
-三份 JSON 都在 `assets/resources/config/` 下，改完**不用重新编译脚本**，重新预览即可生效。
+三份 JSON 都在 `assets/resources/config/` 下，改完**不用重新编译脚本**，重新预览即可生效
+（改完编辑器没反应的话，点一下编辑器窗口让它刷新资源，或者重启编辑器）。
+
+> ⚠️ **JSON 里不要用 `constructor` / `__proto__` / `prototype` 当键名。**
+> Cocos 的导入和序列化用 `obj.constructor === Object` 判断“普通对象”，一旦某个对象带了自己的 `constructor` 键，
+> 整份文件会被当成非普通对象，导入结果是**空**（`asset.json === null`），运行时直接报
+> `Cannot read properties of null (reading 'xxx')`。踩过一次：敌人 id 叫 `constructor`，
+> 已改名成 `builder`（显示名仍是「建造者」）。`Config.ts` 现在会在启动时扫描这类键名并给出可读的报错。
 
 ### 4.1 `player.json`（玩家）
 
@@ -107,8 +111,8 @@ export const AGILITY_DIRECTION = 1;   // 1 = 严格按需求原文；-1 = 敏捷
 
 ```json
 "fox": {
-  "Hp": 24, "Atk": 7, "Atk_gap": 0.5, "Speed": 2.0,
-  "Def": 1, "Drop": { "type": "Agility_up", "rate": 0.5 }, "Agility": 6
+  "Hp": 24, "Atk": 7, "Atk_gap": 1.0, "Speed": 2.0,
+  "Def": 1, "Drop": { "type": "Agility_up", "rate": 0.2 }, "Agility": 3
 }
 ```
 
@@ -125,9 +129,17 @@ export const AGILITY_DIRECTION = 1;   // 1 = 严格按需求原文；-1 = 敏捷
   "name": "森林",
   "diff": 1,
   "Enemy": [
-    { "enemy": "fox",  "spawn_rate": 0.7 },
-    { "enemy": "wolf", "spawn_rate": 0.1 },
+    { "enemy": "fox",  "spawn_rate": 0.5 },
+    { "enemy": "wolf", "spawn_rate": 0.3 },
     { "enemy": "bat",  "spawn_rate": 0.2 }
+  ]
+},
+"factory": {
+  "name": "工厂",
+  "diff": 1.5,
+  "Enemy": [
+    { "enemy": "robot",   "spawn_rate": 0.6 },
+    { "enemy": "builder", "spawn_rate": 0.4 }
   ]
 }
 ```
@@ -164,11 +176,6 @@ assets/
     UIFactory.ts               画白底黑框面板、文字、按钮（用 Graphics，不需要任何图片资源）
     BattleGame.ts              主流程组件：布局、阶段切换、事件播报、弹窗
   resources/config/*.json      三份配置
-docs/
-  layout.png / gen_layout.py   UI 布局示意图 + 生成脚本
-tools/
-  verify-battle.cjs            战斗逻辑自测（node 直接跑，不用开编辑器）
-  check-scene.cjs              场景引用完整性校验
 ```
 
 ### 界面（严格按你给的草图，没有额外加东西）
@@ -189,34 +196,25 @@ tools/
 
 ## 6. 自测
 
-不用打开编辑器就能验证战斗逻辑和场景文件（阈值、骰子分布、伤害、权重刷怪、掉落概率、连续刷关、场景引用完整性）：
+- **类型检查**（不用开编辑器）：
 
 ```powershell
-# 1) 把纯逻辑编译成 commonjs（输出到 tools/build，已被 .gitignore 忽略）
 node "C:\ProgramData\cocos\editors\Creator\3.8.8\resources\app.asar.unpacked\node_modules\typescript\lib\tsc.js" `
-     assets/scripts/BattleCore.ts --target ES2019 --module commonjs --outDir tools/build --skipLibCheck
-
-# 2) 跑断言 + 200 次连续刷关模拟
-node tools/verify-battle.cjs
-
-# 3) 校验场景文件（__id__ 引用、node/component 双向引用、自定义组件 __type__ 是否等于脚本 uuid 的压缩值）
-node tools/check-scene.cjs
+     -p tsconfig.json --noEmit --skipLibCheck
 ```
 
-当前结果：**20099 项断言全部通过**，场景校验通过；
-200 次模拟平均击败 3.9 个敌人（最少 0 个、最多 9 个），能正常打出阵亡弹窗。
-
-脚本类型检查（可选）：
+- **纯逻辑自测**：`BattleCore.ts` 不依赖 `cc`，可以单独编译成 commonjs 后在 node 里跑
+  （输出到 `tools/build`，已被 .gitignore 忽略），用 `pickEnemy / Battle` 反复模拟刷关即可
+  验证命中率、伤害、掉落和“战斗一定能收尾”：
 
 ```powershell
-node "<同上>/typescript/lib/tsc.js" -p tsconfig.json --noEmit --skipLibCheck
+node "<同上>/typescript/lib/tsc.js" assets/scripts/BattleCore.ts `
+     --target ES2019 --module commonjs --outDir tools/build --skipLibCheck
 ```
 
-界面示意图（可选，需要 Pillow）：
-
-```powershell
-python docs/gen_layout.py   # 生成 docs/layout.png
-```
+- **配置校验**：`Config.ts` 启动时会检查三份 JSON（空文件、`constructor` 这类禁用键名、
+  关卡引用了不存在的敌人、`spawn_rate` 之和是否为 1、掉落类型是否在 `DROP_EFFECTS` 里）。
+  有问题打到控制台 warning；整份读不出来时会把原因直接显示在「敌人面板」上，不会静默崩成 null。
 
 ---
 
@@ -227,7 +225,9 @@ python docs/gen_layout.py   # 生成 docs/layout.png
 3. **伤害下限 1**：防止 `Atk <= Def` 时战斗永远打不完。
 4. **`Atk_gap`**：定义为投骰表现时长；一次攻击周期 = `Speed + Atk_gap`。
 5. **`Sp`**：只展示，不参与战斗。
-6. **敏捷方向**：默认 `AGILITY_DIRECTION = 1`（严格按原文），可一行改成直觉版，见 3.2。
+6. **敏捷方向**：默认 `AGILITY_DIRECTION = -1`（敏捷越高越强，见 3.2）；要严格按公式原文（敏捷越高越吃亏）就改成 `1`。
 7. **战败**：不扣任何东西，直接弹窗退出关卡、重置玩家。
-8. **关卡选择**：目前只有一个关卡，点「选择关卡」进入 `levels.json` 里的第一个；要支持多关卡列表，扩展 `BattleGame.startLevel()` 的入参即可。
-9. **敌人中文名**：写在 `BattleGame.ts` 的 `ENEMY_NAMES` 里（`fox/wolf/bat`），没配的敌人直接显示 id。
+8. **关卡选择**：`levels.json` 现在有 `forest` / `factory` 两个关卡，但界面上的「选择关卡」只会进第一个；
+   要做关卡列表，扩展 `BattleGame.startLevel()` 的入参即可。
+9. **敌人中文名**：写在 `BattleGame.ts` 的 `ENEMY_NAMES` 里（`fox/wolf/bat/robot/builder`），没配的敌人直接显示 id。
+10. **配置键名**：`constructor` / `__proto__` / `prototype` 不能当 JSON 键名（会让整份配置导入为空），见第 4 节。

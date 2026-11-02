@@ -47,8 +47,7 @@
     },
     "Agility": 2
   },
-  "constructor":{
-    
+  "builder": {
     "Hp": 100,
     "Atk": 19,
     "Atk_gap": 1.0,

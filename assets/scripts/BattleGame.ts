@@ -20,14 +20,23 @@ const { ccclass } = _decorator;
 const BASE_WIDTH = 1280;
 const BASE_HEIGHT = 800;
 
-/** 敌人 id -> 中文名（只用于显示，取不到就直接显示 id） */
+/**
+ * 敌人 id -> 中文名（只用于显示，取不到就直接显示 id）。
+ * 注意：键名不要用 constructor / __proto__ / prototype，Cocos 的序列化会把带这些键的对象
+ * 当成非普通对象，导致配置导入为空（enemies.json 里已经踩过一次）。
+ */
 const ENEMY_NAMES: { [id: string]: string } = {
     fox: '狐狸',
     wolf: '狼',
     bat: '蝙蝠',
     robot: '机器人',
-    constructor: '建造者'
+    builder: '建造者',
 };
+
+/** 安全地从映射表里取名（id 撞上 Object 原型成员时也不会取到奇怪的东西） */
+function lookupName(table: { [id: string]: string }, id: string): string {
+    return Object.prototype.hasOwnProperty.call(table, id) ? table[id] : id;
+}
 
 /** 击败敌人后，隔多久刷新下一个敌人（秒） */
 const NEXT_ENEMY_DELAY = 0.9;
@@ -109,17 +118,28 @@ export class BattleGame extends Component {
             this.config = await loadGameConfig();
         } catch (err) {
             console.error('[BattleGame] 配置读取失败', err);
-            this.setStatus(`配置读取失败：${err instanceof Error ? err.message : String(err)}`);
+            this.showConfigError(err instanceof Error ? err.message : String(err));
             return;
         }
 
         const levelIds = Object.keys(this.config.levels || {});
         if (levelIds.length === 0) {
-            this.setStatus('levels.json 里没有配置任何关卡');
+            this.showConfigError('levels.json 里没有配置任何关卡');
             return;
         }
         this.levelId = levelIds[0];
         this.exitLevel();
+    }
+
+    /** 配置读不出来时把原因显示在敌人面板上（比只打进控制台更容易看到） */
+    private showConfigError(message: string): void {
+        this.phase = 'loading';
+        this.chooseButton?.setEnabled(false);
+        this.endButton?.setEnabled(false);
+        if (this.enemyTitle) this.enemyTitle.string = '配置读取失败';
+        if (this.enemyText) this.enemyText.string = message;
+        if (this.enemyStatus) this.enemyStatus.string = '';
+        this.setStatus('修好配置后重新预览即可');
     }
 
     /** 点击「选择关卡」：重置玩家并进入关卡 */
@@ -197,8 +217,12 @@ export class BattleGame extends Component {
             return;
         }
 
-        const enemyConfig = config.enemies[enemyId];
+        const enemyTable = config.enemies || {};
+        const enemyConfig = Object.prototype.hasOwnProperty.call(enemyTable, enemyId)
+            ? enemyTable[enemyId]
+            : null;
         if (!enemyConfig) {
+            console.warn(`[BattleGame] enemies.json 里没有敌人 ${enemyId}`);
             this.setStatus(`enemies.json 里没有敌人 ${enemyId}`);
             return;
         }
@@ -211,7 +235,7 @@ export class BattleGame extends Component {
         const enemy = createUnit({
             side: 'enemy',
             id: enemyId,
-            name: ENEMY_NAMES[enemyId] || enemyId,
+            name: lookupName(ENEMY_NAMES, enemyId),
             hp: enemyConfig.Hp,
             maxHp: enemyConfig.Hp,
             atk: enemyConfig.Atk,
