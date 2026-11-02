@@ -2,37 +2,62 @@
   "fox": {
     "Hp": 24,
     "Atk": 7,
-    "Atk_gap": 0.5,
+    "Atk_gap": 1.0,
     "Speed": 2.0,
     "Def": 1,
     "Drop": {
       "type": "Agility_up",
-      "rate": 0.5
+      "rate": 0.2
     },
     "Agility": 3
   },
   "wolf": {
     "Hp": 46,
     "Atk": 10,
-    "Atk_gap": 0.6,
+    "Atk_gap": 1.5,
     "Speed": 2.8,
     "Def": 3,
     "Drop": {
       "type": "Atk_up",
-      "rate": 0.4
+      "rate": 0.3
     },
     "Agility": 4
   },
   "bat": {
     "Hp": 16,
     "Atk": 6,
-    "Atk_gap": 0.35,
+    "Atk_gap": 1.7,
     "Speed": 1.4,
     "Def": 0,
     "Drop": {
       "type": "Hp_heal",
-      "rate": 0.6
+      "rate": 0.7
     },
     "Agility": 6
+  },
+  "robot": {
+    "Hp": 80,
+    "Atk": 15,
+    "Atk_gap": 0.8,
+    "Speed": 1.2,
+    "Def": 5,
+    "Drop": {
+      "type": "Hp_heal",
+      "rate": 0.5
+    },
+    "Agility": 2
+  },
+  "constructor":{
+    
+    "Hp": 100,
+    "Atk": 19,
+    "Atk_gap": 1.0,
+    "Speed": 1.0,
+    "Def": 8,
+    "Drop": {
+      "type": "Atk_up",
+      "rate": 0.4
+    },
+    "Agility": 3
   }
 }

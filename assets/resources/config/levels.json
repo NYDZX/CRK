@@ -7,5 +7,13 @@
       { "enemy": "wolf", "spawn_rate": 0.3 },
       { "enemy": "bat", "spawn_rate": 0.2 }
     ]
+  },
+  "factory": {
+    "name": "工厂",
+    "diff": 1.5,
+    "Enemy": [
+      { "enemy": "robot", "spawn_rate": 0.6 },
+      { "enemy": "constructor", "spawn_rate": 0.4 }
+    ]
   }
 }

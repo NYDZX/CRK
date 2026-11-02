@@ -25,6 +25,8 @@ const ENEMY_NAMES: { [id: string]: string } = {
     fox: '狐狸',
     wolf: '狼',
     bat: '蝙蝠',
+    robot: '机器人',
+    constructor: '建造者'
 };
 
 /** 击败敌人后，隔多久刷新下一个敌人（秒） */
