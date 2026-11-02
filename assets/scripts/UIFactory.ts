@@ -1,4 +1,6 @@
-import { Color, Graphics, HorizontalTextAlignment, Label, Layers, Node, UITransform, VerticalTextAlignment } from 'cc';
+import {
+    Color, EventTouch, Graphics, HorizontalTextAlignment, Label, Layers, Node, UITransform, VerticalTextAlignment,
+} from 'cc';
 
 /**
  * 极简 UI 工具：所有面板/文字/按钮都用代码创建，
@@ -159,11 +161,12 @@ export function createButton(
     width: number,
     height: number,
     onClick: () => void,
+    fontSize = 24,
 ): ButtonView {
     const panel = createPanel(parent, name, width, height);
     const label = createText(panel.node, text, {
         name: 'label',
-        fontSize: 24,
+        fontSize,
         width: width - 20,
         align: 'center',
         valign: 'center',
@@ -205,4 +208,73 @@ export function createButton(
             paint(false);
         },
     };
+}
+
+/** 销毁节点的所有子节点（弹窗列表重建时用） */
+export function clearNode(node: Node): void {
+    const children = node.children.slice();
+    for (const child of children) child.destroy();
+}
+
+export interface PopupView {
+    layer: Node;
+    panel: Node;
+    content: Node;
+    width: number;
+    height: number;
+    /** 关闭并销毁弹窗 */
+    close: () => void;
+}
+
+/**
+ * 通用弹窗：全屏半透明遮罩 + 居中面板 + 标题，内容塞进 content 里。
+ * 点遮罩空白处关闭；点面板内部不会误触关闭。
+ */
+export function createPopup(
+    root: Node,
+    title: string,
+    width: number,
+    height: number,
+    onClose?: () => void,
+): PopupView {
+    const rootSize = getTransform(root).contentSize;
+    const layer = createUINode('Popup', root);
+    setSize(layer, rootSize.width, rootSize.height);
+    const gfx = layer.addComponent(Graphics);
+    gfx.fillColor = new Color(0, 0, 0, 150);
+    gfx.rect(-rootSize.width / 2, -rootSize.height / 2, rootSize.width, rootSize.height);
+    gfx.fill();
+
+    const panel = createPanel(layer, 'PopupPanel', width, height);
+    // 点面板内部不要把事件冒泡给遮罩，否则会误关闭
+    panel.node.on(Node.EventType.TOUCH_START, (event: EventTouch) => {
+        event.propagationStopped = true;
+    });
+    panel.node.on(Node.EventType.TOUCH_END, (event: EventTouch) => {
+        event.propagationStopped = true;
+    });
+
+    let closed = false;
+    const close = (): void => {
+        if (closed) return;
+        closed = true;
+        if (onClose) onClose();
+        if (layer.isValid) layer.destroy();
+    };
+    layer.on(Node.EventType.TOUCH_END, close);
+
+    createText(panel.node, title, {
+        name: 'title',
+        fontSize: 26,
+        bold: true,
+        width: width - 40,
+        align: 'center',
+        valign: 'center',
+    }).node.setPosition(0, height / 2 - 36, 0);
+
+    const content = createUINode('content', panel.node);
+    setSize(content, width - 40, height - 96);
+    content.setPosition(0, -20, 0);
+
+    return { layer, panel: panel.node, content, width, height, close };
 }

@@ -1,9 +1,10 @@
 {
-  "Hp": 70,
+  "Hp": 90,
   "Sp": 10,
-  "Atk": 12,
+  "Atk": 14,
   "Agility": 6,
   "Def": 3,
-  "Atk_gap": 0.7,
-  "Speed": 2.4
+  "Speed": 2.4,
+  "Atk_gap": 0.6,
+  "def_gap": 1.8
 }

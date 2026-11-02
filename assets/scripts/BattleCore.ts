@@ -1,16 +1,20 @@
 /**
- * 战斗核心逻辑（纯数据 + 纯函数，不引用 cc 引擎，方便脱离编辑器单独测试）。
+ * 战斗核心逻辑（纯数据 + 纯函数，不依赖 cc 引擎，可脱离编辑器单独跑测试）。
  *
- * 规则总览
- * 1. 每个单位有一个「攻击间隙」Speed（秒），间隙结束 -> 进入投骰阶段。
- * 2. 投骰阶段持续 Atk_gap 秒（这段时间用来播报骰子点数），结束时结算伤害。
- * 3. 骰子 = 两个六面骰，和值 2-12。
- *    - 2 必定失败
- *    - 12 必定成功
- *    - 3-11 之间：阈值 T = 6 + (攻击方敏捷 - 防守方敏捷) / 关卡难度（向下取整），
- *      骰子和值 > T 则命中，否则未命中。
- * 4. 命中后伤害 = 攻击方 Atk - 防守方 Def（最小 1，避免双方都打不动）。
- * 5. 击败敌人后按 Drop.rate 判定掉落，再随机刷下一个敌人；玩家血量跨战斗保留。
+ * 一、玩家攻击：每 `Speed` 秒蓄力结束进入投骰阶段，`Atk_gap` 秒后结算。
+ *     阈值 T = HIT_BASE + AGILITY_DIRECTION * (玩家敏捷 - 敌人敏捷) / 难度
+ *     和为 2 必定失败、12 必定成功，3-11 之间「和值 > T」命中。
+ *     命中伤害 = max(1, 玩家 Atk - 敌人 Def)。
+ *
+ * 二、玩家防御：每 `def_gap` 秒掷一次防御骰，用「玩家敏捷 vs 敌人 blockade」按同样的方式拼点。
+ *     成功一次，本场战斗的防御值 += 玩家 Def；防御值一直保留到这场战斗结束（与敌人一起重置）。
+ *     也就是「防御值在与该敌人的战斗中始终存在」。
+ *
+ * 三、敌人攻击：不再投骰，每 `Speed` 秒蓄力 + `Atk_gap` 秒出手后 100% 命中，
+ *     伤害 = max(1, 敌人 Atk - 玩家当前防御值)。
+ *
+ * 四、BOSS：关卡配置 `boss { enemy, a, b }`。进入关卡时、以及每次击败 BOSS 之后，
+ *     在 [a, b] 之间随机一个 c；击败 c 个普通敌人后，下一个刷出来的就是 BOSS。
  */
 
 export type Side = 'player' | 'enemy';
@@ -21,18 +25,24 @@ export interface PlayerConfig {
     Sp: number;
     Atk: number;
     Agility: number;
+    /** 每次防御骰成功时获得的防御值 */
     Def: number;
-    Atk_gap: number;
+    /** 攻击间隙（秒） */
     Speed: number;
+    /** 攻击骰的表现时间（秒） */
+    Atk_gap: number;
+    /** 防御间隙（秒）：每隔这么久掷一次防御骰 */
+    def_gap: number;
 }
 
-/** 掉落物：type 为奖励类型字符串，rate 为 0-1 的掉落概率 */
+/** 掉落物：type 为奖励类型字符串，rate 为 0-1 的掉落概率；BOSS 用 equip 指定装备 id */
 export interface DropConfig {
     type: string;
     rate: number;
+    equip?: string;
 }
 
-/** assets/resources/config/enemies.json 中的单个敌人 */
+/** assets/resources/config/enemies.json 中的单个敌人（BOSS 也是敌人） */
 export interface EnemyConfig {
     Hp: number;
     Atk: number;
@@ -41,6 +51,8 @@ export interface EnemyConfig {
     Def: number;
     Drop: DropConfig;
     Agility: number;
+    /** 防御拼点用的“封锁”值：越高玩家越难防住 */
+    blockade: number;
 }
 
 /** 关卡里的一条敌人刷新权重 */
@@ -49,12 +61,22 @@ export interface SpawnEntry {
     spawn_rate: number;
 }
 
+/** 关卡的 BOSS 配置 */
+export interface BossConfig {
+    /** BOSS 的敌人 id（同样配在 enemies.json 里） */
+    enemy: string;
+    /** 击败 [a, b] 个普通敌人后刷 BOSS */
+    a: number;
+    b: number;
+}
+
 /** assets/resources/config/levels.json 中的单个关卡 */
 export interface LevelConfig {
     /** 仅用于界面显示，可省略 */
     name?: string;
     diff: number;
     Enemy: SpawnEntry[];
+    boss?: BossConfig;
 }
 
 export interface EnemiesData {
@@ -79,13 +101,11 @@ export const HIT_BASE = 6;
  *  -1 = 直觉版，Δ 取「防守方敏捷 - 攻击方敏捷」（敏捷越高，越容易打中、越难被打中）。
  *
  * 取 1 时阈值会随“攻方敏捷优势”变大，也就是敏捷越高反而越难命中、越容易被击中，
- * Agility_up 掉落会变成负面效果；而且按现在的配置（玩家敏捷 6、狐狸 3）玩家命中率只有 16.7%、
- * 狐狸打玩家 91.7%，一进 forest 基本必输，所以这里用 -1。
- * 想严格按原文（敏捷越高越吃亏）就改回 1。
+ * Agility_up 掉落会变成负面效果，所以这里用 -1。想严格按原文就改回 1。
  */
 export const AGILITY_DIRECTION = -1;
 
-/** 最小伤害，避免 Atk <= Def 时双方永远打不死对方 */
+/** 最小伤害，避免 Atk <= Def 时永远打不死对方 */
 export const MIN_DAMAGE = 1;
 
 /** 骰子数量与面数：2d6 -> 和值 2-12 */
@@ -143,6 +163,20 @@ export function isHit(sum: number, attackerAgility: number, defenderAgility: num
     return sum > hitThreshold(attackerAgility, defenderAgility, diff);
 }
 
+/**
+ * 拼点成功概率：把 36 种骰子和值全部枚举一遍算概率
+ * （界面上「攻击色子 / 防御色子」面板显示的百分比就是这个）
+ */
+export function hitChance(attackerAgility: number, defenderAgility: number, diff: number): number {
+    let hit = 0;
+    for (let a = 1; a <= DICE_FACES; a += 1) {
+        for (let b = 1; b <= DICE_FACES; b += 1) {
+            if (isHit(a + b, attackerAgility, defenderAgility, diff)) hit += 1;
+        }
+    }
+    return hit / (DICE_FACES * DICE_FACES);
+}
+
 /** 伤害 = Atk - Def，至少 MIN_DAMAGE */
 export function calcDamage(atk: number, def: number): number {
     return Math.max(MIN_DAMAGE, Math.round(atk - def));
@@ -169,6 +203,59 @@ export function rollDrop(drop: DropConfig | undefined, random: RandomFn = defaul
     return random() < drop.rate ? drop.type : null;
 }
 
+/** ---------------- BOSS 刷新进度 ---------------- */
+
+export interface LevelProgress {
+    /** 上一次 BOSS 之后击败的普通敌人数量 */
+    normalKills: number;
+    /** 击败多少个普通敌人后刷 BOSS */
+    bossTarget: number;
+    /** 下一个刷的敌人是不是 BOSS */
+    bossPending: boolean;
+}
+
+/** 在 [a, b] 之间随机一个整数 c（a、b 顺序写反也能用） */
+export function rollBossTarget(boss: BossConfig, random: RandomFn = defaultRandom): number {
+    const low = Math.min(boss.a, boss.b);
+    const high = Math.max(boss.a, boss.b);
+    const span = Math.max(0, Math.floor(high) - Math.floor(low));
+    return Math.floor(low) + Math.floor(random() * (span + 1));
+}
+
+/** 进入关卡 / 击败 BOSS 之后：重新掷一次「还要打几个普通敌人」 */
+export function newLevelProgress(boss: BossConfig | undefined, random: RandomFn = defaultRandom): LevelProgress {
+    return {
+        normalKills: 0,
+        bossTarget: boss ? rollBossTarget(boss, random) : 0,
+        bossPending: false,
+    };
+}
+
+/** 击败一个普通敌人后的进度 */
+export function progressAfterNormalKill(progress: LevelProgress): LevelProgress {
+    const normalKills = progress.normalKills + 1;
+    return {
+        normalKills,
+        bossTarget: progress.bossTarget,
+        bossPending: normalKills >= progress.bossTarget,
+    };
+}
+
+/** 击败 BOSS 后的进度：重新掷 bossTarget、普通敌人计数清零 */
+export function progressAfterBossKill(
+    progress: LevelProgress,
+    boss: BossConfig | undefined,
+    random: RandomFn = defaultRandom,
+): LevelProgress {
+    const next = newLevelProgress(boss, random);
+    return { ...next, bossPending: false };
+}
+
+/** 距离 BOSS 还要打几个普通敌人（界面上显示用） */
+export function bossRemaining(progress: LevelProgress): number {
+    return Math.max(0, progress.bossTarget - progress.normalKills);
+}
+
 /** ---------------- 战斗单位与战斗流程 ---------------- */
 
 export interface UnitInit {
@@ -182,6 +269,8 @@ export interface UnitInit {
     agility: number;
     speed: number;
     atkGap: number;
+    defGap?: number;
+    blockade?: number;
 }
 
 export interface Unit {
@@ -195,11 +284,15 @@ export interface Unit {
     agility: number;
     speed: number;
     atkGap: number;
-    /** 攻击间隙已经累计的时间 */
+    /** 防御间隙（玩家用） */
+    defGap: number;
+    /** 防御拼点对手值（敌人用） */
+    blockade: number;
+    /** 攻击间隙已累计时间 */
     charge: number;
-    /** 投骰阶段剩余时间，> 0 表示正在投骰 */
+    /** 出手阶段剩余时间，> 0 表示正在出手 */
     acting: number;
-    /** 本次投骰结果（投骰阶段结束时结算） */
+    /** 本次攻击投骰结果（玩家用） */
     dice: DiceRoll | null;
     dead: boolean;
 }
@@ -221,6 +314,8 @@ export function createUnit(init: UnitInit): Unit {
         agility: init.agility,
         speed: Math.max(0.2, init.speed),
         atkGap: Math.max(0.05, init.atkGap),
+        defGap: Math.max(0.2, init.defGap === undefined ? 2 : init.defGap),
+        blockade: init.blockade === undefined ? 0 : init.blockade,
         charge: 0,
         acting: 0,
         dice: null,
@@ -229,10 +324,16 @@ export function createUnit(init: UnitInit): Unit {
 }
 
 export type BattleEvent =
-    /** 开始投骰（界面上可以先把骰子点数显示出来） */
-    | { kind: 'roll'; side: Side; dice: DiceRoll; name: string }
-    /** 结算一次攻击 */
-    | { kind: 'attack'; side: Side; name: string; hit: boolean; damage: number; targetSide: Side; targetHp: number }
+    /** 玩家开始投攻击骰（界面上先亮骰子点数） */
+    | { kind: 'attackRoll'; dice: DiceRoll }
+    /** 玩家攻击结算 */
+    | { kind: 'attack'; hit: boolean; damage: number; enemyHp: number }
+    /** 玩家防御骰结算；hit 为 true 时 defense 是新的防御值 */
+    | { kind: 'defense'; dice: DiceRoll; hit: boolean; defense: number }
+    /** 敌人开始出手（100% 命中，出手动画结束后结算） */
+    | { kind: 'enemySwing' }
+    /** 敌人造成伤害 */
+    | { kind: 'enemyHit'; damage: number; defense: number; playerHp: number }
     /** 战斗结束 */
     | { kind: 'end'; winner: Side };
 
@@ -242,9 +343,14 @@ export class Battle {
     readonly enemy: Unit;
     readonly diff: number;
 
+    /** 玩家在这场战斗里累积的防御值（防御骰成功一次 +玩家 Def，战斗结束清空） */
+    defense = 0;
+
     private readonly random: RandomFn;
     private events: BattleEvent[] = [];
     private over = false;
+    private defTimer = 0;
+    private lastDefenseDice: DiceRoll | null = null;
 
     constructor(player: Unit, enemy: Unit, diff: number, random: RandomFn = defaultRandom) {
         this.player = player;
@@ -266,6 +372,16 @@ export class Battle {
         return this.over;
     }
 
+    /** 防御骰计时进度 0-1（界面上显示用） */
+    get defenseProgress(): number {
+        return this.player.defGap > 0 ? Math.min(1, this.defTimer / this.player.defGap) : 0;
+    }
+
+    /** 最近一次防御骰的结果（界面上显示用） */
+    get lastDefense(): DiceRoll | null {
+        return this.lastDefenseDice;
+    }
+
     update(dt: number): BattleEvent[] {
         if (!this.over && dt > 0) {
             this.tick(dt);
@@ -276,66 +392,96 @@ export class Battle {
     }
 
     private tick(dt: number): void {
-        // 玩家先手结算，保证“同归于尽”时判定玩家赢
-        for (const unit of [this.player, this.enemy]) {
-            if (this.over) return;
-            if (unit.dead) continue;
+        // 1) 玩家攻击：先结算，保证「同归于尽」时判玩家赢
+        this.tickAttack(this.player, dt, true);
 
-            if (unit.acting > 0) {
-                unit.acting -= dt;
-                if (unit.acting <= 0) {
-                    unit.acting = 0;
-                    this.resolveAttack(unit);
-                }
-            } else {
-                unit.charge += dt;
-                if (unit.charge >= unit.speed) {
-                    unit.charge -= unit.speed;
-                    this.beginRoll(unit);
-                }
+        // 2) 玩家防御：独立节奏，和攻击互不影响
+        if (!this.over && !this.player.dead) {
+            this.defTimer += dt;
+            if (this.defTimer >= this.player.defGap) {
+                this.defTimer -= this.player.defGap;
+                this.rollDefense();
             }
+        }
+
+        // 3) 敌人攻击：100% 命中
+        this.tickAttack(this.enemy, dt, false);
+    }
+
+    private tickAttack(unit: Unit, dt: number, withDice: boolean): void {
+        if (this.over || unit.dead) return;
+        if (unit.acting > 0) {
+            unit.acting -= dt;
+            if (unit.acting <= 0) {
+                unit.acting = 0;
+                if (withDice) this.resolvePlayerAttack();
+                else this.resolveEnemyAttack();
+            }
+            return;
+        }
+        unit.charge += dt;
+        if (unit.charge >= unit.speed) {
+            unit.charge -= unit.speed;
+            if (withDice) this.beginPlayerAttack();
+            else this.beginEnemyAttack();
         }
     }
 
-    private beginRoll(unit: Unit): void {
-        const foe = this.foeOf(unit);
+    private beginPlayerAttack(): void {
         const dice = rollDice(this.random);
-        const threshold = hitThreshold(unit.agility, foe.agility, this.diff);
-        const hit = isHit(dice.sum, unit.agility, foe.agility, this.diff);
-        unit.dice = { a: dice.a, b: dice.b, sum: dice.sum, threshold, hit };
-        unit.acting = unit.atkGap;
-        this.events.push({ kind: 'roll', side: unit.side, dice: unit.dice, name: unit.name });
+        const threshold = hitThreshold(this.player.agility, this.enemy.agility, this.diff);
+        const hit = isHit(dice.sum, this.player.agility, this.enemy.agility, this.diff);
+        this.player.dice = { a: dice.a, b: dice.b, sum: dice.sum, threshold, hit };
+        this.player.acting = this.player.atkGap;
+        this.events.push({ kind: 'attackRoll', dice: this.player.dice });
     }
 
-    private resolveAttack(unit: Unit): void {
-        const foe = this.foeOf(unit);
-        const dice = unit.dice;
-        unit.dice = null;
+    private resolvePlayerAttack(): void {
+        const dice = this.player.dice;
+        this.player.dice = null;
         if (!dice || this.over) return;
 
         if (!dice.hit) {
-            this.events.push({
-                kind: 'attack', side: unit.side, name: unit.name, hit: false,
-                damage: 0, targetSide: foe.side, targetHp: foe.hp,
-            });
+            this.events.push({ kind: 'attack', hit: false, damage: 0, enemyHp: this.enemy.hp });
             return;
         }
-
-        const damage = calcDamage(unit.atk, foe.def);
-        foe.hp = Math.max(0, foe.hp - damage);
-        this.events.push({
-            kind: 'attack', side: unit.side, name: unit.name, hit: true,
-            damage, targetSide: foe.side, targetHp: foe.hp,
-        });
-
-        if (foe.hp <= 0) {
-            foe.dead = true;
+        const damage = calcDamage(this.player.atk, this.enemy.def);
+        this.enemy.hp = Math.max(0, this.enemy.hp - damage);
+        this.events.push({ kind: 'attack', hit: true, damage, enemyHp: this.enemy.hp });
+        if (this.enemy.hp <= 0) {
+            this.enemy.dead = true;
             this.over = true;
-            this.events.push({ kind: 'end', winner: unit.side });
+            this.events.push({ kind: 'end', winner: 'player' });
         }
     }
 
-    private foeOf(unit: Unit): Unit {
-        return unit.side === 'player' ? this.enemy : this.player;
+    private beginEnemyAttack(): void {
+        this.enemy.acting = this.enemy.atkGap;
+        this.events.push({ kind: 'enemySwing' });
+    }
+
+    private resolveEnemyAttack(): void {
+        if (this.over) return;
+        const damage = calcDamage(this.enemy.atk, this.defense);
+        this.player.hp = Math.max(0, this.player.hp - damage);
+        this.events.push({ kind: 'enemyHit', damage, defense: this.defense, playerHp: this.player.hp });
+        if (this.player.hp <= 0) {
+            this.player.dead = true;
+            this.over = true;
+            this.events.push({ kind: 'end', winner: 'enemy' });
+        }
+    }
+
+    /** 玩家防御骰：玩家敏捷 vs 敌人 blockade，拼点方式和攻击完全一样 */
+    private rollDefense(): void {
+        if (this.over || this.player.dead) return;
+        const dice = rollDice(this.random);
+        const threshold = hitThreshold(this.player.agility, this.enemy.blockade, this.diff);
+        const hit = isHit(dice.sum, this.player.agility, this.enemy.blockade, this.diff);
+        this.lastDefenseDice = { a: dice.a, b: dice.b, sum: dice.sum, threshold, hit };
+        if (hit) {
+            this.defense += Math.max(0, this.player.def);
+        }
+        this.events.push({ kind: 'defense', dice: this.lastDefenseDice, hit, defense: this.defense });
     }
 }

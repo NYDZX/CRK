@@ -6,7 +6,12 @@
       { "enemy": "fox", "spawn_rate": 0.5 },
       { "enemy": "wolf", "spawn_rate": 0.3 },
       { "enemy": "bat", "spawn_rate": 0.2 }
-    ]
+    ],
+    "boss": {
+      "enemy": "fox_king",
+      "a": 3,
+      "b": 6
+    }
   },
   "factory": {
     "name": "工厂",
@@ -14,6 +19,11 @@
     "Enemy": [
       { "enemy": "robot", "spawn_rate": 0.6 },
       { "enemy": "builder", "spawn_rate": 0.4 }
-    ]
+    ],
+    "boss": {
+      "enemy": "factory_overseer",
+      "a": 4,
+      "b": 7
+    }
   }
 }

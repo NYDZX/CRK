@@ -1,0 +1,13 @@
+{
+  "steel_sword": {
+    "name": "钢剑",
+    "slot": "weapon",
+    "Atk": 4
+  },
+  "power_armor": {
+    "name": "动力甲",
+    "slot": "armor",
+    "Def": 2,
+    "Agility": 1
+  }
+}
