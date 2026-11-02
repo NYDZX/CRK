@@ -34,7 +34,11 @@ const PANEL = {
     defense: { x: 449, y: -57, w: 350, h: 230 },
     exit: { x: -293, y: -284, w: 415, h: 125 },
     select: { x: 278, y: -288, w: 434, h: 110 },
+    speed: { x: 570, y: -288, w: 120, h: 70 },
 };
+
+/** 加速按钮的档位：点一下在 1x -> 1.5x -> 2x -> 3x -> 1x 之间循环 */
+const SPEED_STEPS = [1, 1.5, 2, 3];
 
 /** 敌人 id -> 中文名（只用于显示，取不到就直接显示 id） */
 const ENEMY_NAMES: { [id: string]: string } = {
@@ -123,6 +127,10 @@ export class BattleGame extends Component {
 
     private exitButton: ButtonView | null = null;
     private selectButton: ButtonView | null = null;
+    private speedButton: ButtonView | null = null;
+
+    /** 战斗速度倍率（1 / 1.5 / 2 / 3） */
+    private speedFactor = 1;
 
     // ---------------- 生命周期 ----------------
 
@@ -135,8 +143,10 @@ export class BattleGame extends Component {
     protected update(dt: number): void {
         this.syncCanvasSize(false);
         if (this.phase !== 'battle' || !this.battle || this.battle.finished) return;
+        // 弹窗打开时暂停推进，免得选装备/选关的时候被打死
+        if (this.popup) return;
 
-        const events = this.battle.update(Math.min(dt, MAX_STEP));
+        const events = this.battle.update(Math.min(dt, MAX_STEP) * this.speedFactor);
         for (const event of events) this.onBattleEvent(event);
         this.refreshStatusLines();
     }
@@ -412,7 +422,7 @@ export class BattleGame extends Component {
         const runId = this.runId;
         this.scheduleOnce(() => {
             if (runId === this.runId && this.phase === 'battle') this.spawnEnemy();
-        }, NEXT_ENEMY_DELAY);
+        }, NEXT_ENEMY_DELAY / this.speedFactor);
     }
 
     private applyDrop(type: string, effect: DropEffect): void {
@@ -754,6 +764,20 @@ export class BattleGame extends Component {
         });
         this.selectButton.node.setPosition(PANEL.select.x, PANEL.select.y, 0);
         this.selectButton.setEnabled(false);
+
+        this.speedButton = createButton(
+            root, 'SpeedButton', speedLabel(this.speedFactor), PANEL.speed.w, PANEL.speed.h,
+            () => this.cycleSpeed(), 18,
+        );
+        this.speedButton.node.setPosition(PANEL.speed.x, PANEL.speed.y, 0);
+    }
+
+    /** 点加速按钮：1x -> 1.5x -> 2x -> 3x -> 1x 循环 */
+    private cycleSpeed(): void {
+        const index = SPEED_STEPS.indexOf(this.speedFactor);
+        this.speedFactor = SPEED_STEPS[(index + 1) % SPEED_STEPS.length];
+        if (this.speedButton) this.speedButton.label.string = speedLabel(this.speedFactor);
+        if (this.playerUnit) this.log(`战斗速度 ${this.speedFactor}x`);
     }
 
     // ---------------- 弹窗 ----------------
@@ -917,6 +941,11 @@ export class BattleGame extends Component {
         panel.node.setPosition(x, y, 0);
         return this.centerText(panel.node, 0, 0, 24, COLOR_TEXT, true, '-');
     }
+}
+
+/** 加速按钮上的文字：加速 1x / 1.5x / 2x / 3x */
+function speedLabel(factor: number): string {
+    return `加速 ${factor}x`;
 }
 
 /** 把增益差值格式化成 “(+2)” / “(-1)” */
