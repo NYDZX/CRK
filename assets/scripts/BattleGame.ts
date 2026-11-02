@@ -2,7 +2,7 @@ import {
     _decorator, Color, Component, Director, director, Graphics, Label, Layers, Node, UITransform,
 } from 'cc';
 import {
-    Battle, bossRemaining, createUnit, hitChance, newLevelProgress, pickEnemy, progressAfterBossKill,
+    Battle, bossRemaining, calcDamage, createUnit, hitChance, newLevelProgress, pickEnemy, progressAfterBossKill,
     progressAfterNormalKill, rollDrop, DROP_EFFECTS,
 } from './BattleCore';
 import type {
@@ -110,12 +110,14 @@ export class BattleGame extends Component {
     private attackDice: Label[] = [];
     private attackSum: Label | null = null;
     private attackResult: Label | null = null;
+    private attackDamage: Label | null = null;
     private attackChance: Label | null = null;
     private attackStatus: Label | null = null;
 
     private defenseDice: Label[] = [];
     private defenseSum: Label | null = null;
     private defenseResult: Label | null = null;
+    private defenseValue: Label | null = null;
     private defenseChance: Label | null = null;
     private defenseStatus: Label | null = null;
 
@@ -354,13 +356,19 @@ export class BattleGame extends Component {
             this.log('防御失败');
             if (this.defenseResult) this.defenseResult.string = '防御失败';
         }
-        this.refreshChances();
+        this.refreshCombatValues();
     }
 
     private onEnemyHit(event: Extract<BattleEvent, { kind: 'enemyHit' }>): void {
-        this.log(`敌人命中，你受到 ${event.damage} 伤害`);
-        this.setDefenseStatus(`受到 ${event.damage} 伤害（防御值 ${event.defense}）`);
+        if (event.absorbed > 0 && event.damage > 0) {
+            this.log(`敌人命中：防御值挡下 ${event.absorbed}，你受到 ${event.damage} 伤害`);
+        } else if (event.damage <= 0) {
+            this.log(`敌人命中：防御值全部挡下（${event.absorbed}）`);
+        } else {
+            this.log(`敌人命中，你受到 ${event.damage} 伤害`);
+        }
         this.refreshPlayer();
+        this.refreshCombatValues();
     }
 
     /** 击败敌人：普通敌人掉落 buff / BOSS 掉落装备，然后推进 BOSS 进度 */
@@ -458,7 +466,7 @@ export class BattleGame extends Component {
         this.refreshPlayer();
         this.refreshEnemy();
         this.refreshLevel();
-        this.refreshChances();
+        this.refreshCombatValues();
         this.refreshStatusLines();
     }
 
@@ -527,21 +535,25 @@ export class BattleGame extends Component {
         ].join('\n');
     }
 
-    /** 攻击/防御两边的拼点成功率 */
-    private refreshChances(): void {
+    /** 两个色子面板里的「当前值 + 拼点成功率」 */
+    private refreshCombatValues(): void {
         const battle = this.battle;
         if (!this.attackChance || !this.defenseChance) return;
         if (!battle) {
             this.attackChance.string = '';
             this.defenseChance.string = '';
+            if (this.attackDamage) this.attackDamage.string = '';
+            if (this.defenseValue) this.defenseValue.string = '';
             return;
         }
         const player = battle.player;
         const enemy = battle.enemy;
         const atk = hitChance(player.agility, enemy.agility, battle.diff);
         const def = hitChance(player.agility, enemy.blockade, battle.diff);
+        if (this.attackDamage) this.attackDamage.string = `伤害 ${calcDamage(player.atk, enemy.def)}`;
+        if (this.defenseValue) this.defenseValue.string = `防御值 ${battle.defense}`;
         this.attackChance.string = `命中率 ${(atk * 100).toFixed(1)}%`;
-        this.defenseChance.string = `成功率 ${(def * 100).toFixed(1)}%   防御值 ${battle.defense}`;
+        this.defenseChance.string = `成功率 ${(def * 100).toFixed(1)}%`;
     }
 
     /** 每帧刷新的进度文字（蓄力百分比 / 防御倒计时） */
@@ -704,8 +716,9 @@ export class BattleGame extends Component {
             panel.node, firstX + (dieSize + 12) + dieSize + 30, rowY, 22, COLOR_TEXT, true, '= ?',
         );
         this.attackResult = this.leftText(panel.node, '', -w / 2 + 16, -6, 18, COLOR_TEXT, true);
-        this.attackChance = this.leftText(panel.node, '', -w / 2 + 16, -34, 15, COLOR_MUTED, false);
-        this.attackStatus = this.leftText(panel.node, '', -w / 2 + 16, -62, 14, COLOR_MUTED, false);
+        this.attackDamage = this.leftText(panel.node, '', -w / 2 + 16, -34, 17, COLOR_TEXT, true);
+        this.attackChance = this.leftText(panel.node, '', -w / 2 + 16, -58, 15, COLOR_MUTED, false);
+        this.attackStatus = this.leftText(panel.node, '', -w / 2 + 16, -84, 14, COLOR_MUTED, false);
     }
 
     private buildDefensePanel(root: Node): void {
@@ -726,8 +739,9 @@ export class BattleGame extends Component {
             panel.node, firstX + (dieSize + 12) + dieSize + 30, rowY, 22, COLOR_TEXT, true, '= ?',
         );
         this.defenseResult = this.leftText(panel.node, '', -w / 2 + 16, -6, 18, COLOR_TEXT, true);
-        this.defenseChance = this.leftText(panel.node, '', -w / 2 + 16, -34, 15, COLOR_MUTED, false);
-        this.defenseStatus = this.leftText(panel.node, '', -w / 2 + 16, -62, 14, COLOR_MUTED, false);
+        this.defenseValue = this.leftText(panel.node, '', -w / 2 + 16, -34, 17, COLOR_TEXT, true);
+        this.defenseChance = this.leftText(panel.node, '', -w / 2 + 16, -58, 15, COLOR_MUTED, false);
+        this.defenseStatus = this.leftText(panel.node, '', -w / 2 + 16, -84, 14, COLOR_MUTED, false);
     }
 
     private buildButtons(root: Node): void {

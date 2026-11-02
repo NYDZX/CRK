@@ -7,11 +7,10 @@
  *     命中伤害 = max(1, 玩家 Atk - 敌人 Def)。
  *
  * 二、玩家防御：每 `def_gap` 秒掷一次防御骰，用「玩家敏捷 vs 敌人 blockade」按同样的方式拼点。
- *     成功一次，本场战斗的防御值 += 玩家 Def；防御值一直保留到这场战斗结束（与敌人一起重置）。
- *     也就是「防御值在与该敌人的战斗中始终存在」。
+ *     成功一次，本场战斗的防御值 += 玩家 Def。防御值相当于一个**护盾池**：
+ *     一直保留在这场战斗里（换敌人才清空），敌人造成伤害时先扣它，扣完不够的部分才扣血。
  *
- * 三、敌人攻击：不再投骰，每 `Speed` 秒蓄力 + `Atk_gap` 秒出手后 100% 命中，
- *     伤害 = max(1, 敌人 Atk - 玩家当前防御值)。
+ * 三、敌人攻击：不再投骰，每 `Speed` 秒蓄力 + `Atk_gap` 秒出手后 100% 命中，打出 `敌人 Atk` 点伤害。
  *
  * 四、BOSS：关卡配置 `boss { enemy, a, b }`。进入关卡时、以及每次击败 BOSS 之后，
  *     在 [a, b] 之间随机一个 c；击败 c 个普通敌人后，下一个刷出来的就是 BOSS。
@@ -332,8 +331,8 @@ export type BattleEvent =
     | { kind: 'defense'; dice: DiceRoll; hit: boolean; defense: number }
     /** 敌人开始出手（100% 命中，出手动画结束后结算） */
     | { kind: 'enemySwing' }
-    /** 敌人造成伤害 */
-    | { kind: 'enemyHit'; damage: number; defense: number; playerHp: number }
+    /** 敌人造成伤害：absorbed 是被防御值吃掉的部分，damage 是实际掉的血 */
+    | { kind: 'enemyHit'; damage: number; absorbed: number; defense: number; playerHp: number }
     /** 战斗结束 */
     | { kind: 'end'; winner: Side };
 
@@ -343,7 +342,7 @@ export class Battle {
     readonly enemy: Unit;
     readonly diff: number;
 
-    /** 玩家在这场战斗里累积的防御值（防御骰成功一次 +玩家 Def，战斗结束清空） */
+    /** 玩家在这场战斗里累积的防御值（护盾池：防御骰成功一次 +玩家 Def，被伤害扣掉，换敌人清空） */
     defense = 0;
 
     private readonly random: RandomFn;
@@ -462,9 +461,16 @@ export class Battle {
 
     private resolveEnemyAttack(): void {
         if (this.over) return;
-        const damage = calcDamage(this.enemy.atk, this.defense);
-        this.player.hp = Math.max(0, this.player.hp - damage);
-        this.events.push({ kind: 'enemyHit', damage, defense: this.defense, playerHp: this.player.hp });
+        // 敌人这次打出来的伤害（敌人自己的 Def 只影响「玩家打它时扣多少」，不影响它打人）
+        const incoming = Math.max(MIN_DAMAGE, Math.round(this.enemy.atk));
+        // 先扣防御值（护盾池），扣完不够的部分才扣血
+        const absorbed = Math.min(this.defense, incoming);
+        this.defense -= absorbed;
+        const hpLoss = incoming - absorbed;
+        this.player.hp = Math.max(0, this.player.hp - hpLoss);
+        this.events.push({
+            kind: 'enemyHit', damage: hpLoss, absorbed, defense: this.defense, playerHp: this.player.hp,
+        });
         if (this.player.hp <= 0) {
             this.player.dead = true;
             this.over = true;
