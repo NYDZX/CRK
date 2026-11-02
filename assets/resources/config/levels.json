@@ -1,0 +1,11 @@
+{
+  "forest": {
+    "name": "森林",
+    "diff": 1,
+    "Enemy": [
+      { "enemy": "fox", "spawn_rate": 0.5 },
+      { "enemy": "wolf", "spawn_rate": 0.3 },
+      { "enemy": "bat", "spawn_rate": 0.2 }
+    ]
+  }
+}
