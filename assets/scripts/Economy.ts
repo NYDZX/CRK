@@ -55,20 +55,20 @@ export function goldMultiplier(deaths: number): number {
     return Math.sqrt(Math.log(a) + 1);
 }
 
-/** 击败一个敌人实际掉落的金币 = 基础值 × 死亡倍率 */
-export function goldDrop(baseGold: number, deaths: number): number {
+/** 击败一个敌人实际掉落的金币 = 基础值 × 金币倍率（倍率由 BattleGame 按策略/死亡次数算好） */
+export function goldDrop(baseGold: number, multiplier: number): number {
     if (!(baseGold > 0)) return 0;
-    return Math.max(1, Math.round(baseGold * goldMultiplier(deaths)));
+    return Math.max(1, Math.round(baseGold * Math.max(0, multiplier)));
 }
 
 export function isInDebt(gold: number): boolean {
     return gold < 0;
 }
 
-/** 每分钟要扣的利息（不负债返回 0） */
-export function interestAmount(gold: number): number {
+/** 每分钟要扣的利息（不负债返回 0）；rate 默认 5%，策略「低利率」传 3.5% */
+export function interestAmount(gold: number, rate: number = DEBT_INTEREST_RATE): number {
     if (gold >= 0) return 0;
-    return Math.max(1, Math.round(-gold * DEBT_INTEREST_RATE));
+    return Math.max(1, Math.round(-gold * rate));
 }
 
 /** 金币文案：120 / -80（负债） */

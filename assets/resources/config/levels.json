@@ -2,6 +2,7 @@
   "forest": {
     "name": "森林",
     "diff": 1,
+    "Exp": 50,
     "Enemy": [
       { "enemy": "fox", "spawn_rate": 0.5 },
       { "enemy": "wolf", "spawn_rate": 0.3 },
@@ -16,6 +17,7 @@
   "factory": {
     "name": "工厂",
     "diff": 1.5,
+    "Exp": 80,
     "Enemy": [
       { "enemy": "robot", "spawn_rate": 0.6 },
       { "enemy": "builder", "spawn_rate": 0.4 }
@@ -26,9 +28,10 @@
       "b": 7
     }
   },
-    "castle": {
+  "castle": {
     "name": "城堡",
     "diff": 2,
+    "Exp": 120,
     "Enemy": [
       { "enemy": "knight", "spawn_rate": 0.5 },
       { "enemy": "archer", "spawn_rate": 0.3 },

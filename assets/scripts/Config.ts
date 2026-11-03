@@ -89,7 +89,8 @@ function warnMissingNumbers(label: string, source: unknown, keys: string[]): voi
 }
 
 const PLAYER_KEYS = ['Hp', 'Sp', 'Atk', 'Agility', 'Def', 'Atk_gap', 'Speed', 'def_gap'];
-const ENEMY_KEYS = ['Hp', 'Atk', 'Atk_gap', 'Speed', 'Def', 'Agility', 'blockade', 'Gold'];
+const ENEMY_KEYS = ['Hp', 'Atk', 'Atk_gap', 'Speed', 'Def', 'Agility', 'blockade', 'Gold', 'ExpRate'];
+const LEVEL_KEYS = ['diff', 'Exp'];
 
 /** 敌人表检查：数值字段、掉落类型、装备掉落是否配了 equipments */
 function checkEnemies(enemies: EnemiesData, equipments: EquipmentsData): void {
@@ -119,6 +120,7 @@ function checkEnemies(enemies: EnemiesData, equipments: EquipmentsData): void {
 function checkLevels(levels: LevelsData, enemies: EnemiesData): void {
     for (const levelId of Object.keys(levels)) {
         const level: LevelConfig = levels[levelId];
+        warnMissingNumbers(`levels.${levelId}`, level, LEVEL_KEYS);
         const list = level && level.Enemy;
         if (!Array.isArray(list) || list.length === 0) {
             console.warn(`[Config] 关卡 ${levelId} 的 Enemy 列表为空`);

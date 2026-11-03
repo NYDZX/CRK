@@ -6,18 +6,24 @@ import {
     progressAfterNormalKill, rollDrop, DROP_EFFECTS,
 } from './BattleCore';
 import type {
-    BattleEvent, DiceRoll, DropEffect, EnemyConfig, LevelConfig, LevelProgress, Unit,
+    BattleEvent, DiceRoll, DropEffect, EnemyConfig, LevelConfig, LevelProgress, StrategyEffects, Unit,
 } from './BattleCore';
 import { loadGameConfig } from './Config';
 import type { GameConfig } from './Config';
 import {
-    REVIVE_GOLD_COST, formatGold, goldDrop, goldMultiplier, interestAmount, isInDebt, loadGold, reviveHp, saveGold,
+    DEBT_INTEREST_RATE, REVIVE_GOLD_COST, formatGold, goldDrop, goldMultiplier, interestAmount, isInDebt, loadGold,
+    reviveHp, saveGold,
 } from './Economy';
 import {
     calcEquipBonus, equipItem, equipmentName, equipmentSummary, equippedId, hasEquipment, loadEquipmentState,
     ownEquipment, ownedForSlot, saveEquipmentState, unequipSlot, SLOT_LABEL,
 } from './Equipment';
 import type { EquipSlot, EquipmentState } from './Equipment';
+import { MAX_SLOTS, STRATEGY_BY_ID, buildEffects, emptyEffects, strategyName } from './Strategies';
+import {
+    createProgress, expToNext, gainExp, levelAtkBonus, levelDefBonus, loadProgress, saveProgress,
+} from './Progress';
+import type { PlayerProgress } from './Progress';
 import {
     ButtonView, COLOR_MUTED, COLOR_TEXT, TextOptions, createButton, createPanel, createPopup, createText,
     createUINode, setAnchor, setSize,
@@ -53,7 +59,10 @@ const COLOR_TEXT_DIM = new Color(150, 150, 150, 255);
 
 /** 盈亏折线图尺寸（和玩家面板内宽一致） */
 const CHART_W = 365;
-const CHART_H = 60;
+const CHART_H = 56;
+
+/** 「自杀式袭击」策略的强制结束时间（按 1x 速度的真实秒数） */
+const SUICIDE_TIME_LIMIT = 50;
 
 /** 敌人 id -> 中文名（只用于显示，取不到就直接显示 id） */
 const ENEMY_NAMES: { [id: string]: string } = {
@@ -160,6 +169,7 @@ export class BattleGame extends Component {
     private multText: Label | null = null;
     private pnlGrid: Graphics | null = null;
     private pnlLine: Graphics | null = null;
+    private stratButton: ButtonView | null = null;
 
     /** 本关盈亏折线：{ t: 本关经过的秒数, v: 累计盈亏 } */
     private pnlPoints: Array<{ t: number; v: number }> = [];
@@ -167,6 +177,13 @@ export class BattleGame extends Component {
     private goldAtLevelStart = 0;
     /** 本关已过的秒数 */
     private levelSeconds = 0;
+
+    /** 等级 / 经验 / 已获得策略 / 策略槽（永久保存） */
+    private charProgress: PlayerProgress = createProgress();
+    /** 已装备策略的效果开关（战斗开始时用） */
+    private effects: StrategyEffects = emptyEffects();
+    /** 玩家面板上的等级/经验行 */
+    private progressText: Label | null = null;
 
     /** 战斗速度倍率（1 / 1.5 / 2 / 3） */
     private speedFactor = 1;
@@ -187,12 +204,20 @@ export class BattleGame extends Component {
         if (this.popup) return;
 
         this.levelSeconds += Math.min(dt, MAX_STEP);
+
+        // 策略「自杀式袭击」：一局超过 50 秒强制结束关卡（保留已经发生的盈亏）
+        if (this.effects.suicide && this.levelSeconds >= SUICIDE_TIME_LIMIT) {
+            this.log(`自杀式袭击：本局超过 ${SUICIDE_TIME_LIMIT} 秒，强制结束关卡`);
+            this.exitLevel();
+            return;
+        }
+
         const events = this.battle.update(Math.min(dt, MAX_STEP) * this.speedFactor);
         for (const event of events) this.onBattleEvent(event);
         this.refreshStatusLines();
     }
 
-    /** 负债利息：每满 60 秒扣一次「当前负债额的 5%」（不负债就清零计时） */
+    /** 负债利息：每满 60 秒扣一次「当前负债额 × 利率」（低利率策略是 3.5%） */
     private tickInterest(dt: number): void {
         if (!isInDebt(this.gold)) {
             this.interestTimer = 0;
@@ -201,12 +226,84 @@ export class BattleGame extends Component {
         this.interestTimer += dt;
         if (this.interestTimer < 60) return;
         this.interestTimer -= 60;
-        const interest = interestAmount(this.gold);
-        this.gold -= interest;
+        const rate = this.effects.lowInterest ? DEBT_INTEREST_RATE - 0.015 : DEBT_INTEREST_RATE;
+        const interest = interestAmount(this.gold, rate);
+        this.applyGold(-interest, '负债利息');
+    }
+
+    // ---------------- 金币 / 经验 / 策略 ----------------
+
+    /** 统一的加/扣金币入口：处理「自杀式袭击」的取反和 1000 上限 */
+    private applyGold(delta: number, reason: string): void {
+        if (!delta) return;
+        const inLevel = this.phase === 'battle';
+        const actual = this.effects.suicide && inLevel ? -delta : delta;
+        this.gold += actual;
+        if (this.effects.suicide && inLevel && this.gold - this.goldAtLevelStart > 1000) {
+            this.gold = 0;
+            this.log('自杀式袭击：本局盈利超过 1000，金币清零');
+        }
         saveGold(this.gold);
-        this.log(`负债利息：-${interest} 金币（当前 ${this.gold}）`);
-        this.refreshGoldText();
+        this.log(`${reason}：${actual > 0 ? '+' : ''}${actual} 金币（共 ${formatGold(this.gold)}）`);
         this.recordPnl();
+        this.refreshGoldText();
+    }
+
+    /** 当前金币倍率：基础 sqrt(ln(a)+1)；奖杯每次提升额外 +0.2；低利率不随死亡上涨 */
+    private currentGoldMultiplier(): number {
+        if (this.effects.lowInterest) return 1;
+        let mult = goldMultiplier(this.deaths);
+        if (this.effects.trophy) mult += 0.2 * Math.max(0, this.deaths - 1);
+        return mult;
+    }
+
+    /** 基础属性 = 配置 + 等级加成，再套「攻防转换 / 玻璃大炮 / 敏捷」策略（不含装备） */
+    private computeBaseStats(): { atk: number; def: number; agility: number } {
+        const config = this.config;
+        if (!config) return { atk: 0, def: 0, agility: 0 };
+        let atk = config.player.Atk + levelAtkBonus(this.charProgress.level);
+        let def = config.player.Def + levelDefBonus(this.charProgress.level);
+        if (this.effects.swapAtkDef) {
+            const tmp = atk;
+            atk = def;
+            def = tmp;
+        }
+        if (this.effects.glassCannon) {
+            atk *= 3;
+            def = 0;
+        }
+        const agility = config.player.Agility + (this.effects.agilityPlus ? 1 : 0);
+        return { atk, def, agility };
+    }
+
+    /** 把基础属性 + 装备 + 「下一场」增益写回玩家单位 */
+    private refreshPlayerStats(): void {
+        const config = this.config;
+        const player = this.playerUnit;
+        if (!config || !player) return;
+        const base = this.computeBaseStats();
+        const bonus = calcEquipBonus(this.equipState, config.equipments);
+        player.atk = base.atk + this.playerMods.atk + bonus.atk;
+        player.def = base.def + bonus.def;
+        player.agility = base.agility + this.playerMods.agility + bonus.agility;
+    }
+
+    /** 加经验并处理升级奖励（4 级攻击 / 6 级防御 / 5 级随机策略） */
+    private gainExperience(amount: number, reason: string): void {
+        if (!(amount > 0)) return;
+        const before = this.charProgress.level;
+        const result = gainExp(this.charProgress, amount, Math.random);
+        saveProgress(this.charProgress);
+        this.log(`获得 ${Math.round(amount)} 经验（${reason}）`);
+        if (result.levelsUp > 0) {
+            const after = this.charProgress.level;
+            this.log(`升级！Lv.${before} → Lv.${after}`);
+            if (levelAtkBonus(after) > levelAtkBonus(before)) this.log('升级奖励：攻击 +1');
+            if (levelDefBonus(after) > levelDefBonus(before)) this.log('升级奖励：防御 +1');
+            for (const id of result.newStrategies) this.log(`获得新策略：${strategyName(id)}`);
+            this.refreshPlayerStats();
+        }
+        this.refreshPlayer();
     }
 
     // ---------------- 启动 / 流程 ----------------
@@ -214,6 +311,8 @@ export class BattleGame extends Component {
     private async bootstrap(): Promise<void> {
         this.equipState = loadEquipmentState();
         this.gold = loadGold();
+        this.charProgress = loadProgress();
+        this.effects = buildEffects(this.charProgress.slots);
         try {
             this.config = await loadGameConfig();
         } catch (err) {
@@ -272,18 +371,21 @@ export class BattleGame extends Component {
         this.progress = newLevelProgress(level.boss, Math.random);
 
         const base = config.player;
+        const stats = this.computeBaseStats();
+        const equipBonus = calcEquipBonus(this.equipState, config.equipments);
         this.playerUnit = createUnit({
             side: 'player',
             id: 'player',
             name: '玩家',
             hp: base.Hp,
             maxHp: base.Hp,
-            atk: base.Atk,
-            def: base.Def,
-            agility: base.Agility,
+            atk: stats.atk + equipBonus.atk,
+            def: stats.def + equipBonus.def,
+            agility: stats.agility + equipBonus.agility,
             speed: base.Speed,
             atkGap: base.Atk_gap,
             defGap: base.def_gap,
+            effects: this.effects,
         });
 
         this.closePopup();
@@ -350,11 +452,9 @@ export class BattleGame extends Component {
             return;
         }
 
-        // 装备 + 「下一场战斗」增益一起合进来（战斗开始时生效）
-        const bonus = calcEquipBonus(this.equipState, config.equipments);
-        player.atk = config.player.Atk + this.playerMods.atk + bonus.atk;
-        player.def = config.player.Def + bonus.def;
-        player.agility = config.player.Agility + this.playerMods.agility + bonus.agility;
+        // 基础属性 + 装备 + 「下一场战斗」增益一起合进来（战斗开始时生效）
+        player.effects = this.effects;
+        this.refreshPlayerStats();
         this.playerMods = { atk: 0, agility: 0 };
 
         const enemy = createUnit({
@@ -412,6 +512,18 @@ export class BattleGame extends Component {
                 this.log(`完全格挡！BOSS 被削弱：敏捷 ${event.agility}，封锁 ${event.blockade}`);
                 this.refreshEnemy();
                 this.refreshCombatValues();
+                break;
+            case 'goldPercent': {
+                const profit = this.gold - this.goldAtLevelStart;
+                if (profit > 0) {
+                    const delta = -Math.max(1, Math.round(profit * Math.abs(event.percent)));
+                    this.applyGold(-delta, '策略惩罚（本局盈利）');
+                }
+                break;
+            }
+            case 'thorns':
+                this.log(`荆棘反弹 ${event.damage} 伤害（敌人剩余 ${event.enemyHp}）`);
+                this.refreshEnemy();
                 break;
             case 'end':
                 if (event.winner === 'player') this.onEnemyDefeated();
@@ -492,14 +604,11 @@ export class BattleGame extends Component {
             }
         }
 
-        // 金币掉落：基础金币 × sqrt(ln(a)+1)（a = 本次关卡的死亡次数）
-        const goldGain = goldDrop(enemyConfig ? enemyConfig.Gold : 0, this.deaths);
-        if (goldGain > 0) {
-            this.gold += goldGain;
-            saveGold(this.gold);
-            this.log(`获得 ${goldGain} 金币（共 ${formatGold(this.gold)}）`);
-            this.recordPnl();
-        }
+        // 金币：基础金币 × 当前金币倍率；经验：敌人倍率 × 关卡基础经验
+        const goldGain = goldDrop(enemyConfig ? enemyConfig.Gold : 0, this.currentGoldMultiplier());
+        if (goldGain > 0) this.applyGold(goldGain, `击败 ${enemy.name}`);
+        const baseExp = this.level ? this.level.Exp : 0;
+        this.gainExperience((enemyConfig ? enemyConfig.ExpRate : 1) * baseExp, `击败 ${enemy.name}`);
 
         if (isBoss) {
             this.progress = progressAfterBossKill(this.progress, this.level ? this.level.boss : undefined, Math.random);
@@ -552,16 +661,13 @@ export class BattleGame extends Component {
         this.log(`获得装备 ${equipmentName(config.equipments, id)}（永久保存，可在玩家面板装备）`);
     }
 
-    /** BOSS 特殊规则的金币结算（+10 击中 / -55 挨打） */
-    private onGoldBonus(amount: number, source: 'hit' | 'damaged'): void {
+    /** BOSS 特殊规则的金币结算（+10 击中 / -55 挨打），走统一的金币入口 */
+    private onGoldBonus(amount: number, source: 'hit' | 'damaged' | 'dice'): void {
         if (!amount) return;
-        this.gold += amount;
-        saveGold(this.gold);
         const who = this.battle ? this.battle.enemy.name : 'BOSS';
-        if (amount > 0) this.log(`击中 ${who}：+${amount} 金币（共 ${formatGold(this.gold)}）`);
-        else this.log(`被 ${who} 打中：${amount} 金币（共 ${formatGold(this.gold)}）`);
-        this.recordPnl();
-        this.refreshGoldText();
+        if (source === 'hit') this.applyGold(amount, `击中 ${who}`);
+        else if (source === 'damaged') this.applyGold(amount, `被 ${who} 打中`);
+        else this.applyGold(amount, '骰子奖励');
     }
 
     /**
@@ -574,15 +680,15 @@ export class BattleGame extends Component {
         if (!battle || !player) return;
 
         this.deaths += 1;
-        this.gold -= REVIVE_GOLD_COST;
-        saveGold(this.gold);
-        this.recordPnl();
+        this.applyGold(-REVIVE_GOLD_COST, '复活扣款');
 
         const hp = reviveHp(player.maxHp, this.deaths);
-        this.log(`第 ${this.deaths} 次被击败：扣 ${REVIVE_GOLD_COST} 金币，按 ${hp} 血复活`);
+        this.log(`第 ${this.deaths} 次被击败，按 ${hp} 血复活`);
         if (isInDebt(this.gold)) {
-            this.log(`金币 ${formatGold(this.gold)}，进入负债：每分钟扣负债的 5%`);
+            this.log(`金币 ${formatGold(this.gold)}，进入负债：每分钟扣负债的利息`);
         }
+        // 死亡也给 3 倍基础经验
+        this.gainExperience(3 * (this.level ? this.level.Exp : 0), '被击败补偿');
 
         // 先同步到界面，0.9 秒后真正恢复战斗
         player.hp = hp;
@@ -620,6 +726,7 @@ export class BattleGame extends Component {
             this.terminalText.string = '';
             this.refreshEquipButtons();
             this.refreshGoldText();
+            this.refreshProgressText();
             this.refreshPnl();
             return;
         }
@@ -627,23 +734,29 @@ export class BattleGame extends Component {
         const base = config.player;
         this.playerText.string = [
             `生命  ${player.hp} / ${player.maxHp}`,
-            `攻击  ${player.atk}${bonusText(player.atk - base.Atk)}`,
-            `防御  ${player.def}${bonusText(player.def - base.Def)}`,
-            `敏捷  ${player.agility}${bonusText(player.agility - base.Agility)}`,
-            `攻击间隔  ${player.speed.toFixed(1)} 秒`,
-            `防御间隔  ${player.defGap.toFixed(1)} 秒`,
+            `攻击  ${player.atk}${bonusText(player.atk - base.Atk)}    防御  ${player.def}${bonusText(player.def - base.Def)}`,
+            `敏捷  ${player.agility}${bonusText(player.agility - base.Agility)}    攻速 ${player.speed.toFixed(1)}s   防速 ${player.defGap.toFixed(1)}s`,
         ].join('\n');
         this.terminalText.string = this.logs.join('\n');
         this.refreshEquipButtons();
         this.refreshGoldText();
+        this.refreshProgressText();
         this.refreshPnl();
+    }
+
+    /** 等级 / 经验那一行 */
+    private refreshProgressText(): void {
+        if (!this.progressText) return;
+        const level = this.charProgress.level;
+        this.progressText.string = `Lv.${level}   经验 ${this.charProgress.exp} / ${expToNext(level)}`;
     }
 
     /** 金币那一行：负数就变红，并标出每分钟利息 */
     private refreshGoldText(): void {
         if (!this.goldText) return;
         if (isInDebt(this.gold)) {
-            this.goldText.string = `金币  ${formatGold(this.gold)}（负债 ${interestAmount(this.gold)}/分钟）`;
+            const rate = this.effects.lowInterest ? DEBT_INTEREST_RATE - 0.015 : DEBT_INTEREST_RATE;
+            this.goldText.string = `金币  ${formatGold(this.gold)}（负债 ${interestAmount(this.gold, rate)}/分钟）`;
             this.goldText.color = COLOR_DEBT;
         } else {
             this.goldText.string = `金币  ${formatGold(this.gold)}`;
@@ -729,6 +842,10 @@ export class BattleGame extends Component {
         const armor = config ? equipmentName(config.equipments, equippedId(this.equipState, 'armor')) : '';
         this.weaponButton.label.string = `武器：${weapon || '空'}`;
         this.armorButton.label.string = `护甲：${armor || '空'}`;
+        if (this.stratButton) {
+            const equipped = this.charProgress.slots.filter((id) => !!id).length;
+            this.stratButton.label.string = `策略 ${equipped}/${MAX_SLOTS}`;
+        }
     }
 
     private refreshEnemy(): void {
@@ -847,7 +964,7 @@ export class BattleGame extends Component {
 
     private log(line: string): void {
         this.logs.push(line);
-        while (this.logs.length > 5) this.logs.shift();
+        while (this.logs.length > 6) this.logs.shift();
         this.refreshPlayer();
     }
 
@@ -895,17 +1012,18 @@ export class BattleGame extends Component {
         panel.node.setPosition(x, y, 0);
 
         this.leftText(panel.node, '玩家', -w / 2 + 22, h / 2 - 36, 26, COLOR_TEXT, true);
-        this.playerText = this.blockText(panel.node, -w / 2 + 22, h / 2 - 82, w - 44, 18, 24);
-        this.goldText = this.leftText(panel.node, '金币  0', -w / 2 + 22, 20, 17, COLOR_TEXT, true);
+        this.playerText = this.blockText(panel.node, -w / 2 + 22, h / 2 - 82, w - 44, 18, 26);
+        this.progressText = this.leftText(panel.node, 'Lv.1   经验 0 / 100', -w / 2 + 22, 92, 16, COLOR_TEXT, true);
+        this.goldText = this.leftText(panel.node, '金币  0', -w / 2 + 22, 66, 17, COLOR_TEXT, true);
 
         // 本关盈亏 + 当前金币倍率
-        this.pnlText = this.leftText(panel.node, '本关盈亏  ——', -w / 2 + 22, -6, 16, COLOR_TEXT, true);
-        this.multText = this.rightText(panel.node, '倍率 1.00x', w / 2 - 22, -6, 16, COLOR_MUTED, false);
+        this.pnlText = this.leftText(panel.node, '本关盈亏  ——', -w / 2 + 22, 40, 16, COLOR_TEXT, true);
+        this.multText = this.rightText(panel.node, '倍率 1.00x', w / 2 - 22, 40, 16, COLOR_MUTED, false);
 
         // 盈亏折线图（网格 + 折线两个 Graphics，避免描边互相覆盖）
         const chart = createUINode('PnlChart', panel.node);
         setSize(chart, CHART_W, CHART_H);
-        chart.setPosition(0, -52, 0);
+        chart.setPosition(0, 0, 0);
         const gridNode = createUINode('grid', chart);
         setSize(gridNode, CHART_W, CHART_H);
         this.pnlGrid = gridNode.addComponent(Graphics);
@@ -913,18 +1031,24 @@ export class BattleGame extends Component {
         setSize(lineNode, CHART_W, CHART_H);
         this.pnlLine = lineNode.addComponent(Graphics);
 
-        this.weaponButton = createButton(panel.node, 'WeaponButton', '武器：空', 178, 50, () => {
+        // 武器 / 护甲 / 策略 三个按钮
+        this.weaponButton = createButton(panel.node, 'WeaponButton', '武器：空', 113, 46, () => {
             this.showEquipPopup('weapon');
-        }, 18);
-        this.weaponButton.node.setPosition(-w / 2 + 111, -112, 0);
+        }, 15);
+        this.weaponButton.node.setPosition(-126, -52, 0);
 
-        this.armorButton = createButton(panel.node, 'ArmorButton', '护甲：空', 178, 50, () => {
+        this.armorButton = createButton(panel.node, 'ArmorButton', '护甲：空', 113, 46, () => {
             this.showEquipPopup('armor');
-        }, 18);
-        this.armorButton.node.setPosition(-w / 2 + 297, -112, 0);
+        }, 15);
+        this.armorButton.node.setPosition(0, -52, 0);
 
-        this.leftText(panel.node, '终端', -w / 2 + 22, -158, 15, COLOR_MUTED, false);
-        this.terminalText = this.blockText(panel.node, -w / 2 + 22, -180, w - 44, 13, 17);
+        this.stratButton = createButton(panel.node, 'StrategyButton', `策略 0/${MAX_SLOTS}`, 113, 46, () => {
+            this.showStrategyPopup();
+        }, 15);
+        this.stratButton.node.setPosition(126, -52, 0);
+
+        this.leftText(panel.node, '终端', -w / 2 + 22, -100, 15, COLOR_MUTED, false);
+        this.terminalText = this.blockText(panel.node, -w / 2 + 22, -122, w - 44, 13, 17);
     }
 
     private buildInfoPanel(root: Node): void {
@@ -1103,6 +1227,70 @@ export class BattleGame extends Component {
             popup.close();
         }, 18);
         close.node.setPosition(0, y, 0);
+    }
+
+    /** 策略弹窗：5 个槽位 + 已获得但没装的策略 */
+    private showStrategyPopup(): void {
+        const popup = this.openPopup('策略', 640, 600);
+        const slots = this.charProgress.slots;
+        const equipped = slots.filter((id) => !!id).length;
+        this.centerText(popup.content, 0, 196, 17, COLOR_TEXT, true,
+            `已装备 ${equipped} / ${MAX_SLOTS}      等级 Lv.${this.charProgress.level}`);
+
+        // 5 个槽位（点一下卸下）
+        const slotW = 110;
+        const gap = 12;
+        const totalW = MAX_SLOTS * slotW + (MAX_SLOTS - 1) * gap;
+        for (let i = 0; i < MAX_SLOTS; i += 1) {
+            const id = slots[i];
+            const text = id ? strategyName(id) : `槽位 ${i + 1}`;
+            const button = createButton(popup.content, `Slot-${i}`, text, slotW, 56, () => {
+                if (!id) return;
+                slots[i] = null;
+                this.applyStrategyChange(`卸下 ${strategyName(id)}`);
+            }, 14);
+            button.node.setPosition(-totalW / 2 + slotW / 2 + i * (slotW + gap), 130, 0);
+        }
+
+        // 已获得但没装的策略（最多列 7 条，避免超出弹窗）
+        this.centerText(popup.content, 0, 82, 14, COLOR_MUTED, false, '拥有的策略（点击装进空槽）');
+        const unused = this.charProgress.owned.filter((id) => slots.indexOf(id) < 0);
+        if (unused.length === 0) {
+            this.centerText(popup.content, 0, 30, 15, COLOR_MUTED, false, '没有可装备的策略：每升 5 级随机获得一个');
+        }
+        const shown = unused.slice(0, 7);
+        let y = 56;
+        for (const id of shown) {
+            const def = Object.prototype.hasOwnProperty.call(STRATEGY_BY_ID, id) ? STRATEGY_BY_ID[id] : null;
+            const text = def ? `${def.name}    ${def.desc}` : id;
+            const button = createButton(popup.content, `Own-${id}`, text, 560, 40, () => {
+                const empty = slots.indexOf(null);
+                if (empty < 0) {
+                    this.log('策略槽满了，先点上面的槽位卸下一个');
+                    return;
+                }
+                slots[empty] = id;
+                this.applyStrategyChange(`装备 ${strategyName(id)}`);
+            }, 13);
+            button.node.setPosition(0, y, 0);
+            y -= 44;
+        }
+        if (unused.length > shown.length) {
+            this.centerText(popup.content, 0, y + 6, 13, COLOR_MUTED, false,
+                `还有 ${unused.length - shown.length} 条没显示，先装备/卸下再看`);
+        }
+
+        const close = createButton(popup.content, 'CloseStrategy', '关闭', 560, 36, () => popup.close(), 16);
+        close.node.setPosition(0, -238, 0);
+    }
+
+    /** 装备/卸下策略：存盘 + 重建效果（从下一场战斗开始生效） */
+    private applyStrategyChange(message: string): void {
+        saveProgress(this.charProgress);
+        this.effects = buildEffects(this.charProgress.slots);
+        this.log(`${message}（下一场战斗生效）`);
+        this.refreshAll();
+        this.scheduleOnce(() => this.showStrategyPopup(), 0);
     }
 
     /** 商店：不在关卡里的时候才能买东西（目前只卖装备） */
