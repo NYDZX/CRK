@@ -17,5 +17,11 @@
     "Def": 2,
     "Agility": 1,
     "price": 260
+  },
+  "guardian_blade": {
+    "name": "守卫者之刃",
+    "slot": "weapon",
+    "Atk": 6,
+    "price": 420
   }
 }

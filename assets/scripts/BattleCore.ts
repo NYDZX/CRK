@@ -41,6 +41,22 @@ export interface DropConfig {
     equip?: string;
 }
 
+/**
+ * BOSS 特殊规则（可选，目前只有城堡守卫用）。
+ * 负数就是扣金币 / 降属性，未配置的项不生效。
+ */
+export interface EnemySpecial {
+    /** 主角击中 BOSS 时给的金币 */
+    goldOnHitPlayer?: number;
+    /** 主角被 BOSS 打掉血时扣的金币（被完全格挡不算） */
+    goldOnPlayerDamaged?: number;
+    /** 主角击中 BOSS 后，主角「下一次攻击」的敏捷 -N */
+    agilityDownOnHitPlayer?: number;    /** 主角完全格挡 BOSS 攻击后，BOSS 敏捷 -N */
+    agilityDownOnFullBlock?: number;
+    /** 主角完全格挡 BOSS 攻击后，BOSS blockade +N */
+    blockadeUpOnFullBlock?: number;
+}
+
 /** assets/resources/config/enemies.json 中的单个敌人（BOSS 也是敌人） */
 export interface EnemyConfig {
     Hp: number;
@@ -54,6 +70,8 @@ export interface EnemyConfig {
     Agility: number;
     /** 防御拼点用的“封锁”值：越高玩家越难防住 */
     blockade: number;
+    /** BOSS 特殊规则（可选） */
+    special?: EnemySpecial;
 }
 
 /** 关卡里的一条敌人刷新权重 */
@@ -272,6 +290,7 @@ export interface UnitInit {
     atkGap: number;
     defGap?: number;
     blockade?: number;
+    special?: EnemySpecial;
 }
 
 export interface Unit {
@@ -295,6 +314,8 @@ export interface Unit {
     acting: number;
     /** 本次攻击投骰结果（玩家用） */
     dice: DiceRoll | null;
+    /** BOSS 特殊规则（只有部分敌人有） */
+    special?: EnemySpecial;
     dead: boolean;
 }
 
@@ -320,6 +341,7 @@ export function createUnit(init: UnitInit): Unit {
         charge: 0,
         acting: 0,
         dice: null,
+        special: init.special,
         dead: init.hp <= 0,
     };
 }
@@ -337,6 +359,12 @@ export type BattleEvent =
     | { kind: 'enemyHit'; damage: number; absorbed: number; defense: number; playerHp: number }
     /** 玩家被打倒：战斗暂停，等外部 revive() 复活后继续打同一个敌人 */
     | { kind: 'playerDown' }
+    /** BOSS 特殊规则：金币变化（amount 正=获得，负=扣除；source 是触发原因） */
+    | { kind: 'goldBonus'; amount: number; source: 'hit' | 'damaged' }
+    /** BOSS 特殊规则：主角敏捷被削（当前值） */
+    | { kind: 'playerAgilityDown'; agility: number }
+    /** BOSS 特殊规则：主角完全格挡后 BOSS 被削弱 */
+    | { kind: 'bossWeakened'; agility: number; blockade: number }
     /** 战斗结束 */
     | { kind: 'end'; winner: Side };
 
@@ -354,6 +382,8 @@ export class Battle {
     private over = false;
     /** 玩家已经倒下，正在等外部 revive() */
     private playerDown = false;
+    /** 下一次攻击时主角敏捷要扣多少（BOSS 特殊规则，用掉就清零） */
+    private pendingAgilityPenalty = 0;
     private defTimer = 0;
     private lastDefenseDice: DiceRoll | null = null;
 
@@ -454,9 +484,14 @@ export class Battle {
     }
 
     private beginPlayerAttack(): void {
+        // 上一次击中 BOSS 的代价：这一次攻击的敏捷先扣掉
+        const penalty = this.pendingAgilityPenalty;
+        this.pendingAgilityPenalty = 0;
+        const agility = Math.max(1, this.player.agility - penalty);
+
         const dice = rollDice(this.random);
-        const threshold = hitThreshold(this.player.agility, this.enemy.agility, this.diff);
-        const hit = isHit(dice.sum, this.player.agility, this.enemy.agility, this.diff);
+        const threshold = hitThreshold(agility, this.enemy.agility, this.diff);
+        const hit = isHit(dice.sum, agility, this.enemy.agility, this.diff);
         this.player.dice = { a: dice.a, b: dice.b, sum: dice.sum, threshold, hit };
         this.player.acting = this.player.atkGap;
         this.events.push({ kind: 'attackRoll', dice: this.player.dice });
@@ -474,6 +509,23 @@ export class Battle {
         const damage = calcDamage(this.player.atk, this.enemy.def);
         this.enemy.hp = Math.max(0, this.enemy.hp - damage);
         this.events.push({ kind: 'attack', hit: true, damage, enemyHp: this.enemy.hp });
+
+        // BOSS 特殊规则：击中 BOSS 的代价与奖励
+        const spec = this.enemy.special;
+        if (spec) {
+            if (spec.goldOnHitPlayer) {
+                this.events.push({ kind: 'goldBonus', amount: spec.goldOnHitPlayer, source: 'hit' });
+            }
+            if (spec.agilityDownOnHitPlayer) {
+                // 只影响「下一次攻击」：累积到下一次投攻击骰时扣掉，然后清零
+                this.pendingAgilityPenalty += spec.agilityDownOnHitPlayer;
+                this.events.push({
+                    kind: 'playerAgilityDown',
+                    agility: Math.max(1, this.player.agility - this.pendingAgilityPenalty),
+                });
+            }
+        }
+
         if (this.enemy.hp <= 0) {
             this.enemy.dead = true;
             this.over = true;
@@ -498,6 +550,32 @@ export class Battle {
         this.events.push({
             kind: 'enemyHit', damage: hpLoss, absorbed, defense: this.defense, playerHp: this.player.hp,
         });
+
+        // BOSS 特殊规则：掉血扣金币 / 完全格挡住时 BOSS 被削弱
+        const spec = this.enemy.special;
+        if (spec) {
+            if (hpLoss > 0) {
+                if (spec.goldOnPlayerDamaged) {
+                    this.events.push({ kind: 'goldBonus', amount: spec.goldOnPlayerDamaged, source: 'damaged' });
+                }
+            } else {
+                let weakened = false;
+                if (spec.agilityDownOnFullBlock) {
+                    this.enemy.agility = Math.max(1, this.enemy.agility - spec.agilityDownOnFullBlock);
+                    weakened = true;
+                }
+                if (spec.blockadeUpOnFullBlock) {
+                    this.enemy.blockade += spec.blockadeUpOnFullBlock;
+                    weakened = true;
+                }
+                if (weakened) {
+                    this.events.push({
+                        kind: 'bossWeakened', agility: this.enemy.agility, blockade: this.enemy.blockade,
+                    });
+                }
+            }
+        }
+
         if (this.player.hp <= 0) {
             // 玩家倒下：不结束战斗，等外部 revive()（复活后继续打同一个敌人）
             this.player.dead = true;

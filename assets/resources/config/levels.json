@@ -25,5 +25,19 @@
       "a": 4,
       "b": 7
     }
+  },
+    "castle": {
+    "name": "城堡",
+    "diff": 2,
+    "Enemy": [
+      { "enemy": "knight", "spawn_rate": 0.5 },
+      { "enemy": "archer", "spawn_rate": 0.3 },
+      { "enemy": "mage", "spawn_rate": 0.2 }
+    ],
+    "boss": {
+      "enemy": "castle_guardian",
+      "a": 5,
+      "b": 8
+    }
   }
 }

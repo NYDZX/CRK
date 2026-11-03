@@ -64,6 +64,10 @@ const ENEMY_NAMES: { [id: string]: string } = {
     builder: '建造者',
     fox_king: '狐狸王',
     factory_overseer: '工厂监督者',
+    knight: '骑士',
+    archer: '弓手',
+    mage: '法师',
+    castle_guardian: '城堡守卫',
 };
 
 /** 击败敌人后，隔多久刷新下一个敌人（秒） */
@@ -365,6 +369,7 @@ export class BattleGame extends Component {
             speed: enemyConfig.Speed,
             atkGap: enemyConfig.Atk_gap,
             blockade: enemyConfig.blockade,
+            special: enemyConfig.special,
         });
 
         this.battle = new Battle(player, enemy, level.diff, Math.random);
@@ -395,6 +400,18 @@ export class BattleGame extends Component {
                 break;
             case 'playerDown':
                 this.onPlayerDown();
+                break;
+            case 'goldBonus':
+                this.onGoldBonus(event.amount, event.source);
+                break;
+            case 'playerAgilityDown':
+                this.log(`击中 BOSS 的代价：下一次攻击敏捷降到 ${event.agility}`);
+                this.refreshCombatValues();
+                break;
+            case 'bossWeakened':
+                this.log(`完全格挡！BOSS 被削弱：敏捷 ${event.agility}，封锁 ${event.blockade}`);
+                this.refreshEnemy();
+                this.refreshCombatValues();
                 break;
             case 'end':
                 if (event.winner === 'player') this.onEnemyDefeated();
@@ -533,6 +550,18 @@ export class BattleGame extends Component {
         saveEquipmentState(this.equipState);
         this.lastDrop = equipmentName(config.equipments, id);
         this.log(`获得装备 ${equipmentName(config.equipments, id)}（永久保存，可在玩家面板装备）`);
+    }
+
+    /** BOSS 特殊规则的金币结算（+10 击中 / -55 挨打） */
+    private onGoldBonus(amount: number, source: 'hit' | 'damaged'): void {
+        if (!amount) return;
+        this.gold += amount;
+        saveGold(this.gold);
+        const who = this.battle ? this.battle.enemy.name : 'BOSS';
+        if (amount > 0) this.log(`击中 ${who}：+${amount} 金币（共 ${formatGold(this.gold)}）`);
+        else this.log(`被 ${who} 打中：${amount} 金币（共 ${formatGold(this.gold)}）`);
+        this.recordPnl();
+        this.refreshGoldText();
     }
 
     /**

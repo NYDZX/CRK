@@ -109,6 +109,24 @@ export const AGILITY_DIRECTION = -1;  // -1 = 敏捷越高越强（当前默认�
 - 负债利息只在游戏运行时累计（关掉预览期间不扣）；负债期间商店里所有商品都点不动。
 - 想调数值：`Economy.ts` 顶部的 `REVIVE_GOLD_COST`、`DEBT_INTEREST_RATE`、`REVIVE_MIN_RATIO`。
 
+### 3.7 BOSS 特殊规则（`enemies.json` 里的 `special`）
+
+目前只有城堡守卫（`castle_guardian`）在用，字段都是可选的：
+
+| 字段 | 效果 |
+| --- | --- |
+| `goldOnHitPlayer` | 主角击中 BOSS 时 +金币（城堡守卫 = 10） |
+| `goldOnPlayerDamaged` | 主角被 BOSS **打掉血**时扣金币（-55），被完全格挡不算 |
+| `agilityDownOnHitPlayer` | 主角击中 BOSS 后，**下一次攻击**的敏捷 -1（用完清零，不叠加到整场） |
+| `agilityDownOnFullBlock` | 主角**完全格挡**后 BOSS 敏捷 -1 |
+| `blockadeUpOnFullBlock` | 主角**完全格挡**后 BOSS blockade +1（下次更难挡） |
+
+城堡关卡（`levels.json` 的 `castle`，diff 2，小怪 knight / archer / mage）：BOSS 是 `castle_guardian`，
+`Hp 100 / Atk 55 / Speed 3.0 / Agility 6 / blockade 6`，掉落「守卫者之刃」+ 250 金币。
+
+> 实测（钢剑 + 动力甲）：能打赢，但大约 39 秒、死 4 次、金币净 **-745** —— 这关的 BOSS 就是个金币绞肉机。
+> 觉得太狠就调 `castle_guardian` 的 `Atk`、`Hp`，或者把 `goldOnPlayerDamaged` 从 -55 改小一点。
+
 ---
 
 ## 4. 配置文件
@@ -153,6 +171,7 @@ export const AGILITY_DIRECTION = -1;  // -1 = 敏捷越高越强（当前默认�
 | `Gold` | 击败后掉落的基础金币（会乘上 `sqrt(ln(a)+1)` 的死亡倍率） |
 | `Drop.type` / `Drop.rate` | 普通敌人的奖励类型与掉落概率（见 4.5） |
 | `Drop.equip` | 当 `Drop.type` 为 `Equip` 时掉落的装备 id（BOSS 用，见 4.4） |
+| `special` | 可选，BOSS 特殊规则（击中给钱/挨打扣钱/敏捷变化），见 3.7 |
 
 ### 4.3 `levels.json`（关卡 + BOSS）
 
@@ -279,6 +298,9 @@ node "<同上>/typescript/lib/tsc.js" assets/scripts/BattleCore.ts assets/script
 | factory 带钢剑+动力甲 | 5.0 | 62% | 16% |
 
 带复活的经济模拟（森林，100 个种子）：平均击杀 30.5 个、复活 7.4 次、结束时平均还剩 91.5 金币 —— 复活费（80/次）基本能把一轮的收入吃掉，想攒钱进商店就得少死。
+
+城堡守卫（钢剑 + 动力甲，实测一场）：BOSS 会被打死，用时约 39 秒、角色死 4 次、金币净变化 **-745**；
+特殊规则也单独验证过：击中 BOSS 必定 +10 金币且下一次攻击敏捷被扣、被打掉血必定 -55、完全格挡时 0 伤害且不扣钱、同时 BOSS 敏捷 -1 / blockade +1。
 
 - **配置校验**：`Config.ts` 启动时会检查四份 JSON（空文件、`constructor` 这类禁用键名、
   关卡引用了不存在的敌人、`spawn_rate` 之和、`blockade` / `def_gap` 等新字段、
