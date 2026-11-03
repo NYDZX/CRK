@@ -11,7 +11,7 @@ import type {
 import { loadGameConfig } from './Config';
 import type { GameConfig } from './Config';
 import {
-    REVIVE_GOLD_COST, formatGold, goldDrop, interestAmount, isInDebt, loadGold, reviveHp, saveGold,
+    REVIVE_GOLD_COST, formatGold, goldDrop, goldMultiplier, interestAmount, isInDebt, loadGold, reviveHp, saveGold,
 } from './Economy';
 import {
     calcEquipBonus, equipItem, equipmentName, equipmentSummary, equippedId, hasEquipment, loadEquipmentState,
@@ -46,6 +46,14 @@ const SPEED_STEPS = [1, 1.5, 2, 3];
 
 /** 负债时金币文字用红色 */
 const COLOR_DEBT = new Color(200, 40, 40, 255);
+
+/** 本关盈利 / 亏损的颜色 */
+const COLOR_PROFIT = new Color(30, 140, 70, 255);
+const COLOR_TEXT_DIM = new Color(150, 150, 150, 255);
+
+/** 盈亏折线图尺寸（和玩家面板内宽一致） */
+const CHART_W = 365;
+const CHART_H = 60;
 
 /** 敌人 id -> 中文名（只用于显示，取不到就直接显示 id） */
 const ENEMY_NAMES: { [id: string]: string } = {
@@ -144,6 +152,17 @@ export class BattleGame extends Component {
     private shopButton: ButtonView | null = null;
 
     private goldText: Label | null = null;
+    private pnlText: Label | null = null;
+    private multText: Label | null = null;
+    private pnlGrid: Graphics | null = null;
+    private pnlLine: Graphics | null = null;
+
+    /** 本关盈亏折线：{ t: 本关经过的秒数, v: 累计盈亏 } */
+    private pnlPoints: Array<{ t: number; v: number }> = [];
+    /** 进入关卡时的金币（用来算本关盈亏） */
+    private goldAtLevelStart = 0;
+    /** 本关已过的秒数 */
+    private levelSeconds = 0;
 
     /** 战斗速度倍率（1 / 1.5 / 2 / 3） */
     private speedFactor = 1;
@@ -163,6 +182,7 @@ export class BattleGame extends Component {
         // 弹窗打开时暂停推进，免得选装备/选关的时候被打死
         if (this.popup) return;
 
+        this.levelSeconds += Math.min(dt, MAX_STEP);
         const events = this.battle.update(Math.min(dt, MAX_STEP) * this.speedFactor);
         for (const event of events) this.onBattleEvent(event);
         this.refreshStatusLines();
@@ -182,6 +202,7 @@ export class BattleGame extends Component {
         saveGold(this.gold);
         this.log(`负债利息：-${interest} 金币（当前 ${this.gold}）`);
         this.refreshGoldText();
+        this.recordPnl();
     }
 
     // ---------------- 启动 / 流程 ----------------
@@ -240,6 +261,10 @@ export class BattleGame extends Component {
         this.spawnedBoss = false;
         this.deaths = 0;
         this.interestTimer = 0;
+        // 本关盈亏从 0 开始重新记
+        this.goldAtLevelStart = this.gold;
+        this.levelSeconds = 0;
+        this.pnlPoints = [{ t: 0, v: 0 }];
         this.progress = newLevelProgress(level.boss, Math.random);
 
         const base = config.player;
@@ -456,6 +481,7 @@ export class BattleGame extends Component {
             this.gold += goldGain;
             saveGold(this.gold);
             this.log(`获得 ${goldGain} 金币（共 ${formatGold(this.gold)}）`);
+            this.recordPnl();
         }
 
         if (isBoss) {
@@ -521,6 +547,7 @@ export class BattleGame extends Component {
         this.deaths += 1;
         this.gold -= REVIVE_GOLD_COST;
         saveGold(this.gold);
+        this.recordPnl();
 
         const hp = reviveHp(player.maxHp, this.deaths);
         this.log(`第 ${this.deaths} 次被击败：扣 ${REVIVE_GOLD_COST} 金币，按 ${hp} 血复活`);
@@ -564,6 +591,7 @@ export class BattleGame extends Component {
             this.terminalText.string = '';
             this.refreshEquipButtons();
             this.refreshGoldText();
+            this.refreshPnl();
             return;
         }
 
@@ -579,6 +607,7 @@ export class BattleGame extends Component {
         this.terminalText.string = this.logs.join('\n');
         this.refreshEquipButtons();
         this.refreshGoldText();
+        this.refreshPnl();
     }
 
     /** 金币那一行：负数就变红，并标出每分钟利息 */
@@ -591,6 +620,77 @@ export class BattleGame extends Component {
             this.goldText.string = `金币  ${formatGold(this.gold)}`;
             this.goldText.color = COLOR_TEXT;
         }
+    }
+
+    /** 记录一次金币变动，并重画盈亏折线 */
+    private recordPnl(): void {
+        if (this.phase !== 'battle') {
+            this.refreshPnl();
+            return;
+        }
+        const value = this.gold - this.goldAtLevelStart;
+        const last = this.pnlPoints[this.pnlPoints.length - 1];
+        if (!last || last.v !== value) {
+            this.pnlPoints.push({ t: this.levelSeconds, v: value });
+            while (this.pnlPoints.length > 400) this.pnlPoints.shift();
+        }
+        this.refreshPnl();
+    }
+
+    /** 本关盈亏 + 当前金币倍率 + 折线图 */
+    private refreshPnl(): void {
+        const inLevel = this.phase === 'battle';
+        const pnl = inLevel ? this.gold - this.goldAtLevelStart : 0;
+        if (this.pnlText) {
+            this.pnlText.string = inLevel ? `本关盈亏  ${signedGold(pnl)}` : '本关盈亏  ——';
+            this.pnlText.color = pnl < 0 ? COLOR_DEBT : (pnl > 0 ? COLOR_PROFIT : COLOR_TEXT);
+        }
+        if (this.multText) {
+            this.multText.string = `倍率 ${goldMultiplier(this.deaths).toFixed(2)}x`;
+        }
+        this.drawPnlChart();
+    }
+
+    /** 画盈亏折线：横轴是本关经过的时间，纵轴是累计盈亏，中间灰线是 0 */
+    private drawPnlChart(): void {
+        const grid = this.pnlGrid;
+        const line = this.pnlLine;
+        if (!grid || !line) return;
+        grid.clear();
+        line.clear();
+        if (this.phase !== 'battle' || this.pnlPoints.length < 2) return;
+
+        const halfW = CHART_W / 2;
+        const halfH = CHART_H / 2;
+        let maxV = 0;
+        let minV = 0;
+        for (const p of this.pnlPoints) {
+            if (p.v > maxV) maxV = p.v;
+            if (p.v < minV) minV = p.v;
+        }
+        if (maxV === minV) maxV = minV + 1;
+        const maxT = Math.max(1, this.pnlPoints[this.pnlPoints.length - 1].t);
+        const toX = (t: number): number => -halfW + (t / maxT) * CHART_W;
+        const toY = (v: number): number => ((v - minV) / (maxV - minV)) * CHART_H - halfH;
+
+        grid.strokeColor = COLOR_TEXT_DIM;
+        grid.lineWidth = 1;
+        grid.rect(-halfW, -halfH, CHART_W, CHART_H);
+        grid.moveTo(-halfW, toY(0));
+        grid.lineTo(halfW, toY(0));
+        grid.stroke();
+
+        const lastValue = this.pnlPoints[this.pnlPoints.length - 1].v;
+        line.strokeColor = lastValue < 0 ? COLOR_DEBT : COLOR_PROFIT;
+        line.lineWidth = 2;
+        for (let i = 0; i < this.pnlPoints.length; i += 1) {
+            const p = this.pnlPoints[i];
+            const x = toX(p.t);
+            const y = toY(p.v);
+            if (i === 0) line.moveTo(x, y);
+            else line.lineTo(x, y);
+        }
+        line.stroke();
     }
 
     private refreshEquipButtons(): void {
@@ -718,7 +818,7 @@ export class BattleGame extends Component {
 
     private log(line: string): void {
         this.logs.push(line);
-        while (this.logs.length > 8) this.logs.shift();
+        while (this.logs.length > 5) this.logs.shift();
         this.refreshPlayer();
     }
 
@@ -767,20 +867,35 @@ export class BattleGame extends Component {
 
         this.leftText(panel.node, '玩家', -w / 2 + 22, h / 2 - 36, 26, COLOR_TEXT, true);
         this.playerText = this.blockText(panel.node, -w / 2 + 22, h / 2 - 82, w - 44, 18, 24);
-        this.goldText = this.leftText(panel.node, '金币  0', -w / 2 + 22, 18, 17, COLOR_TEXT, true);
+        this.goldText = this.leftText(panel.node, '金币  0', -w / 2 + 22, 20, 17, COLOR_TEXT, true);
+
+        // 本关盈亏 + 当前金币倍率
+        this.pnlText = this.leftText(panel.node, '本关盈亏  ——', -w / 2 + 22, -6, 16, COLOR_TEXT, true);
+        this.multText = this.rightText(panel.node, '倍率 1.00x', w / 2 - 22, -6, 16, COLOR_MUTED, false);
+
+        // 盈亏折线图（网格 + 折线两个 Graphics，避免描边互相覆盖）
+        const chart = createUINode('PnlChart', panel.node);
+        setSize(chart, CHART_W, CHART_H);
+        chart.setPosition(0, -52, 0);
+        const gridNode = createUINode('grid', chart);
+        setSize(gridNode, CHART_W, CHART_H);
+        this.pnlGrid = gridNode.addComponent(Graphics);
+        const lineNode = createUINode('line', chart);
+        setSize(lineNode, CHART_W, CHART_H);
+        this.pnlLine = lineNode.addComponent(Graphics);
 
         this.weaponButton = createButton(panel.node, 'WeaponButton', '武器：空', 178, 50, () => {
             this.showEquipPopup('weapon');
         }, 18);
-        this.weaponButton.node.setPosition(-w / 2 + 111, -26, 0);
+        this.weaponButton.node.setPosition(-w / 2 + 111, -112, 0);
 
         this.armorButton = createButton(panel.node, 'ArmorButton', '护甲：空', 178, 50, () => {
             this.showEquipPopup('armor');
         }, 18);
-        this.armorButton.node.setPosition(-w / 2 + 297, -26, 0);
+        this.armorButton.node.setPosition(-w / 2 + 297, -112, 0);
 
-        this.leftText(panel.node, '终端', -w / 2 + 22, -76, 16, COLOR_MUTED, false);
-        this.terminalText = this.blockText(panel.node, -w / 2 + 22, -102, w - 44, 13, 18);
+        this.leftText(panel.node, '终端', -w / 2 + 22, -158, 15, COLOR_MUTED, false);
+        this.terminalText = this.blockText(panel.node, -w / 2 + 22, -180, w - 44, 13, 17);
     }
 
     private buildInfoPanel(root: Node): void {
@@ -1059,6 +1174,17 @@ export class BattleGame extends Component {
         return this.text(parent, { x, y, anchor: [0.5, 0.5], text, fontSize, color, bold });
     }
 
+    /** 右对齐单行文字，锚点在右边中点 */
+    private rightText(
+        parent: Node, text: string, x: number, y: number,
+        fontSize: number, color: Color, bold = false,
+    ): Label {
+        const label = createText(parent, text, { fontSize, color, bold, align: 'right' });
+        setAnchor(label.node, 1, 0.5);
+        label.node.setPosition(x, y, 0);
+        return label;
+    }
+
     /** 自动换行的文字块，锚点在左上角，高度随内容增长 */
     private blockText(
         parent: Node, x: number, y: number,
@@ -1098,6 +1224,11 @@ export class BattleGame extends Component {
 /** 加速按钮上的文字：加速 1x / 1.5x / 2x / 3x */
 function speedLabel(factor: number): string {
     return `加速 ${factor}x`;
+}
+
+/** 盈亏数字：+240 / -80 / 0 */
+function signedGold(value: number): string {
+    return value > 0 ? `+${value}` : String(value);
 }
 
 /** 把增益差值格式化成 “(+2)” / “(-1)” */
