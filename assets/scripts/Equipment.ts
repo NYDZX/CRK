@@ -10,6 +10,8 @@ export interface EquipmentConfig {
     Atk?: number;
     Def?: number;
     Agility?: number;
+    /** 商店售价（金币） */
+    price?: number;
 }
 
 export interface EquipmentsData {

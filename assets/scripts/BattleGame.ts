@@ -11,6 +11,9 @@ import type {
 import { loadGameConfig } from './Config';
 import type { GameConfig } from './Config';
 import {
+    REVIVE_GOLD_COST, formatGold, goldDrop, interestAmount, isInDebt, loadGold, reviveHp, saveGold,
+} from './Economy';
+import {
     calcEquipBonus, equipItem, equipmentName, equipmentSummary, equippedId, hasEquipment, loadEquipmentState,
     ownEquipment, ownedForSlot, saveEquipmentState, unequipSlot, SLOT_LABEL,
 } from './Equipment';
@@ -35,10 +38,14 @@ const PANEL = {
     exit: { x: -293, y: -284, w: 415, h: 125 },
     select: { x: 278, y: -288, w: 434, h: 110 },
     speed: { x: 570, y: -288, w: 120, h: 70 },
+    shop: { x: -12, y: -288, w: 130, h: 70 },
 };
 
 /** 加速按钮的档位：点一下在 1x -> 1.5x -> 2x -> 3x -> 1x 之间循环 */
 const SPEED_STEPS = [1, 1.5, 2, 3];
+
+/** 负债时金币文字用红色 */
+const COLOR_DEBT = new Color(200, 40, 40, 255);
 
 /** 敌人 id -> 中文名（只用于显示，取不到就直接显示 id） */
 const ENEMY_NAMES: { [id: string]: string } = {
@@ -57,7 +64,7 @@ const NEXT_ENEMY_DELAY = 0.9;
 /** 单帧最大步长，避免切后台回来时战斗瞬间跑完 */
 const MAX_STEP = 0.1;
 
-type Phase = 'loading' | 'select' | 'battle' | 'defeat';
+type Phase = 'loading' | 'select' | 'battle';
 
 interface Mods {
     atk: number;
@@ -94,6 +101,12 @@ export class BattleGame extends Component {
     private runId = 0;
     /** 当前这场是不是 BOSS 战 */
     private spawnedBoss = false;
+    /** 金币（可以是负数 —— 负债），永久保存 */
+    private gold = 0;
+    /** 负债利息计时（每满 60 秒扣一次当前负债的 5%） */
+    private interestTimer = 0;
+    /** 本次关卡里的死亡（复活）次数，第一次死亡时是 1 */
+    private deaths = 0;
 
     // ---------------- UI ----------------
     private root: Node | null = null;
@@ -128,6 +141,9 @@ export class BattleGame extends Component {
     private exitButton: ButtonView | null = null;
     private selectButton: ButtonView | null = null;
     private speedButton: ButtonView | null = null;
+    private shopButton: ButtonView | null = null;
+
+    private goldText: Label | null = null;
 
     /** 战斗速度倍率（1 / 1.5 / 2 / 3） */
     private speedFactor = 1;
@@ -142,6 +158,7 @@ export class BattleGame extends Component {
 
     protected update(dt: number): void {
         this.syncCanvasSize(false);
+        this.tickInterest(dt);
         if (this.phase !== 'battle' || !this.battle || this.battle.finished) return;
         // 弹窗打开时暂停推进，免得选装备/选关的时候被打死
         if (this.popup) return;
@@ -151,10 +168,27 @@ export class BattleGame extends Component {
         this.refreshStatusLines();
     }
 
+    /** 负债利息：每满 60 秒扣一次「当前负债额的 5%」（不负债就清零计时） */
+    private tickInterest(dt: number): void {
+        if (!isInDebt(this.gold)) {
+            this.interestTimer = 0;
+            return;
+        }
+        this.interestTimer += dt;
+        if (this.interestTimer < 60) return;
+        this.interestTimer -= 60;
+        const interest = interestAmount(this.gold);
+        this.gold -= interest;
+        saveGold(this.gold);
+        this.log(`负债利息：-${interest} 金币（当前 ${this.gold}）`);
+        this.refreshGoldText();
+    }
+
     // ---------------- 启动 / 流程 ----------------
 
     private async bootstrap(): Promise<void> {
         this.equipState = loadEquipmentState();
+        this.gold = loadGold();
         try {
             this.config = await loadGameConfig();
         } catch (err) {
@@ -177,6 +211,7 @@ export class BattleGame extends Component {
         this.phase = 'loading';
         this.selectButton?.setEnabled(false);
         this.exitButton?.setEnabled(false);
+        this.shopButton?.setEnabled(false);
         if (this.enemyTitle) this.enemyTitle.string = '配置读取失败';
         if (this.enemyText) this.enemyText.string = message;
         if (this.enemyStatus) this.enemyStatus.string = '';
@@ -203,6 +238,8 @@ export class BattleGame extends Component {
         this.logs = [];
         this.playerMods = { atk: 0, agility: 0 };
         this.spawnedBoss = false;
+        this.deaths = 0;
+        this.interestTimer = 0;
         this.progress = newLevelProgress(level.boss, Math.random);
 
         const base = config.player;
@@ -223,8 +260,10 @@ export class BattleGame extends Component {
         this.closePopup();
         this.selectButton?.setEnabled(true);
         this.exitButton?.setEnabled(true);
+        this.shopButton?.setEnabled(false);
         this.log(`进入关卡 ${this.levelName()}`);
         this.log(`BOSS 倒计时：再击败 ${bossRemaining(this.progress)} 个普通敌人`);
+        this.log(`金币 ${formatGold(this.gold)}`);
         this.spawnEnemy();
         this.refreshAll();
     }
@@ -246,6 +285,7 @@ export class BattleGame extends Component {
         this.setDiceIdle();
         this.selectButton?.setEnabled(!!this.config);
         this.exitButton?.setEnabled(false);
+        this.shopButton?.setEnabled(!!this.config);
         this.refreshAll();
         this.setAttackStatus(this.config ? '点「选关」挑一个关卡' : '配置加载中…');
         this.setDefenseStatus('');
@@ -328,9 +368,11 @@ export class BattleGame extends Component {
             case 'enemyHit':
                 this.onEnemyHit(event);
                 break;
+            case 'playerDown':
+                this.onPlayerDown();
+                break;
             case 'end':
                 if (event.winner === 'player') this.onEnemyDefeated();
-                else this.onPlayerDefeated();
                 break;
             default:
                 break;
@@ -408,6 +450,14 @@ export class BattleGame extends Component {
             }
         }
 
+        // 金币掉落：基础金币 × sqrt(ln(a)+1)（a = 本次关卡的死亡次数）
+        const goldGain = goldDrop(enemyConfig ? enemyConfig.Gold : 0, this.deaths);
+        if (goldGain > 0) {
+            this.gold += goldGain;
+            saveGold(this.gold);
+            this.log(`获得 ${goldGain} 金币（共 ${formatGold(this.gold)}）`);
+        }
+
         if (isBoss) {
             this.progress = progressAfterBossKill(this.progress, this.level ? this.level.boss : undefined, Math.random);
             this.spawnedBoss = false;
@@ -459,15 +509,39 @@ export class BattleGame extends Component {
         this.log(`获得装备 ${equipmentName(config.equipments, id)}（永久保存，可在玩家面板装备）`);
     }
 
-    /** 玩家阵亡：弹窗，退出关卡 */
-    private onPlayerDefeated(): void {
-        this.phase = 'defeat';
-        this.selectButton?.setEnabled(true);
-        this.exitButton?.setEnabled(true);
-        this.setAttackStatus('玩家阵亡');
+    /**
+     * 玩家被击败：不退出关卡，扣一笔金币后按公式复活继续打同一个敌人。
+     * 复活血量 = hp_origin / a（a = 死亡次数，a 最多算到 5，也就是不低于 20%）。
+     */
+    private onPlayerDown(): void {
+        const battle = this.battle;
+        const player = this.playerUnit;
+        if (!battle || !player) return;
+
+        this.deaths += 1;
+        this.gold -= REVIVE_GOLD_COST;
+        saveGold(this.gold);
+
+        const hp = reviveHp(player.maxHp, this.deaths);
+        this.log(`第 ${this.deaths} 次被击败：扣 ${REVIVE_GOLD_COST} 金币，按 ${hp} 血复活`);
+        if (isInDebt(this.gold)) {
+            this.log(`金币 ${formatGold(this.gold)}，进入负债：每分钟扣负债的 5%`);
+        }
+
+        // 先同步到界面，0.9 秒后真正恢复战斗
+        player.hp = hp;
+        player.dead = false;
+        this.setAttackStatus(`复活中…（${hp} / ${player.maxHp}）`);
         this.setDefenseStatus('');
         this.refreshAll();
-        this.showDefeatPopup();
+
+        const runId = this.runId;
+        this.scheduleOnce(() => {
+            if (runId !== this.runId || !battle) return;
+            battle.revive(hp);
+            this.setAttackStatus('复活完成');
+            this.refreshAll();
+        }, 0.9);
     }
 
     // ---------------- 界面刷新 ----------------
@@ -489,6 +563,7 @@ export class BattleGame extends Component {
             this.playerText.string = '——';
             this.terminalText.string = '';
             this.refreshEquipButtons();
+            this.refreshGoldText();
             return;
         }
 
@@ -503,6 +578,19 @@ export class BattleGame extends Component {
         ].join('\n');
         this.terminalText.string = this.logs.join('\n');
         this.refreshEquipButtons();
+        this.refreshGoldText();
+    }
+
+    /** 金币那一行：负数就变红，并标出每分钟利息 */
+    private refreshGoldText(): void {
+        if (!this.goldText) return;
+        if (isInDebt(this.gold)) {
+            this.goldText.string = `金币  ${formatGold(this.gold)}（负债 ${interestAmount(this.gold)}/分钟）`;
+            this.goldText.color = COLOR_DEBT;
+        } else {
+            this.goldText.string = `金币  ${formatGold(this.gold)}`;
+            this.goldText.color = COLOR_TEXT;
+        }
     }
 
     private refreshEquipButtons(): void {
@@ -630,7 +718,7 @@ export class BattleGame extends Component {
 
     private log(line: string): void {
         this.logs.push(line);
-        while (this.logs.length > 10) this.logs.shift();
+        while (this.logs.length > 8) this.logs.shift();
         this.refreshPlayer();
     }
 
@@ -678,20 +766,21 @@ export class BattleGame extends Component {
         panel.node.setPosition(x, y, 0);
 
         this.leftText(panel.node, '玩家', -w / 2 + 22, h / 2 - 36, 26, COLOR_TEXT, true);
-        this.playerText = this.blockText(panel.node, -w / 2 + 22, h / 2 - 82, w - 44, 18, 26);
+        this.playerText = this.blockText(panel.node, -w / 2 + 22, h / 2 - 82, w - 44, 18, 24);
+        this.goldText = this.leftText(panel.node, '金币  0', -w / 2 + 22, 18, 17, COLOR_TEXT, true);
 
         this.weaponButton = createButton(panel.node, 'WeaponButton', '武器：空', 178, 50, () => {
             this.showEquipPopup('weapon');
         }, 18);
-        this.weaponButton.node.setPosition(-w / 2 + 111, -8, 0);
+        this.weaponButton.node.setPosition(-w / 2 + 111, -26, 0);
 
         this.armorButton = createButton(panel.node, 'ArmorButton', '护甲：空', 178, 50, () => {
             this.showEquipPopup('armor');
         }, 18);
-        this.armorButton.node.setPosition(-w / 2 + 297, -8, 0);
+        this.armorButton.node.setPosition(-w / 2 + 297, -26, 0);
 
-        this.leftText(panel.node, '终端', -w / 2 + 22, -52, 16, COLOR_MUTED, false);
-        this.terminalText = this.blockText(panel.node, -w / 2 + 22, -78, w - 44, 13, 18);
+        this.leftText(panel.node, '终端', -w / 2 + 22, -76, 16, COLOR_MUTED, false);
+        this.terminalText = this.blockText(panel.node, -w / 2 + 22, -102, w - 44, 13, 18);
     }
 
     private buildInfoPanel(root: Node): void {
@@ -770,6 +859,12 @@ export class BattleGame extends Component {
             () => this.cycleSpeed(), 18,
         );
         this.speedButton.node.setPosition(PANEL.speed.x, PANEL.speed.y, 0);
+
+        this.shopButton = createButton(
+            root, 'ShopButton', '商店', PANEL.shop.w, PANEL.shop.h, () => this.showShopPopup(), 18,
+        );
+        this.shopButton.node.setPosition(PANEL.shop.x, PANEL.shop.y, 0);
+        this.shopButton.setEnabled(false);
     }
 
     /** 点加速按钮：1x -> 1.5x -> 2x -> 3x -> 1x 循环 */
@@ -866,17 +961,74 @@ export class BattleGame extends Component {
         close.node.setPosition(0, y, 0);
     }
 
-    /** 战败弹窗 */
-    private showDefeatPopup(): void {
-        const popup = this.openPopup('战斗失败', 480, 300);
-        this.centerText(popup.content, 0, 40, 18, COLOR_MUTED, false,
-            `你在「${this.levelName()}」中被击败`);
-        this.centerText(popup.content, 0, 4, 18, COLOR_MUTED, false, `共击败 ${this.kills} 个敌人`);
-        const button = createButton(popup.content, 'ExitLevel', '退出关卡', 260, 68, () => {
-            popup.close();
-            this.exitLevel();
-        });
-        button.node.setPosition(0, -70, 0);
+    /** 商店：不在关卡里的时候才能买东西（目前只卖装备） */
+    private showShopPopup(): void {
+        const config = this.config;
+        if (!config) return;
+        if (this.phase === 'battle') {
+            this.log('关卡中不能进商店，先点「退出」');
+            return;
+        }
+
+        const popup = this.openPopup('商店', 560, 480);
+        const debt = isInDebt(this.gold);
+        this.centerText(
+            popup.content, 0, 116, 17, debt ? COLOR_DEBT : COLOR_TEXT, true,
+            debt ? `金币 ${formatGold(this.gold)}（负债中，无法购买）` : `金币 ${this.gold}`,
+        );
+
+        const rowHeight = 62;
+        const step = rowHeight + 14;
+        let y = 58;
+        for (const id of Object.keys(config.equipments)) {
+            const cfg = config.equipments[id];
+            const price = cfg.price || 0;
+            const owned = hasEquipment(this.equipState, id);
+            const afford = !debt && this.gold >= price;
+            let text = `${cfg.name}    ${equipmentSummary(cfg)}    价格 ${price}`;
+            if (owned) text = `${cfg.name}    ${equipmentSummary(cfg)}    已拥有`;
+            else if (debt) text = `${cfg.name}    ${equipmentSummary(cfg)}    负债中无法购买`;
+            else if (!afford) text = `${cfg.name}    ${equipmentSummary(cfg)}    金币不足（需 ${price}）`;
+
+            const button = createButton(popup.content, `Shop-${id}`, text, 480, rowHeight, () => {
+                if (this.buyEquipment(id)) this.scheduleOnce(() => this.showShopPopup(), 0);
+            }, 17);
+            button.node.setPosition(0, y, 0);
+            button.setEnabled(!owned && afford);
+            y -= step;
+        }
+
+        const close = createButton(popup.content, 'CloseShop', '关闭', 480, rowHeight, () => popup.close(), 17);
+        close.node.setPosition(0, y, 0);
+    }
+
+    /** 买一件装备：成功返回 true（商店会刷新） */
+    private buyEquipment(id: string): boolean {
+        const config = this.config;
+        if (!config) return false;
+        const cfg = config.equipments[id];
+        if (!cfg) return false;
+        const price = cfg.price || 0;
+        if (isInDebt(this.gold)) {
+            this.log('负债中，无法购买');
+            return false;
+        }
+        if (hasEquipment(this.equipState, id)) {
+            this.log(`已经拥有 ${cfg.name}`);
+            return false;
+        }
+        if (this.gold < price) {
+            this.log(`金币不足：${cfg.name} 需要 ${price}`);
+            return false;
+        }
+
+        this.gold -= price;
+        saveGold(this.gold);
+        this.equipState = ownEquipment(this.equipState, id);
+        saveEquipmentState(this.equipState);
+        this.log(`购买 ${cfg.name}，花费 ${price} 金币（剩余 ${this.gold}）`);
+        this.refreshAll();
+        return true;
     }
 
     // ---------------- 小工具 ----------------

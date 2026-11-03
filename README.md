@@ -23,13 +23,16 @@ Cocos Creator **3.8.8** 项目。选关 → 自动战斗（攻击骰 / 防御骰
 | 玩家攻击 | 每 `Speed` 秒蓄力结束进入投骰，`Atk_gap` 秒后结算；命中则 `玩家 Atk - 敌人 Def` |
 | 玩家防御 | 每 `def_gap` 秒掷一次防御骰（玩家敏捷 vs 敌人 `blockade`）；成功一次防御值 +玩家 `Def`，防御值相当于**护盾池**，一直保留到这场战斗结束 |
 | 敌人攻击 | **不投骰，100% 命中**：每 `Speed` 秒蓄力 + `Atk_gap` 秒出手后打出 `敌人 Atk` 点伤害，**先扣防御值，扣完才扣血** |
-| 普通敌人 | 击败后按 `Drop.rate` 掉落 buff（下一场战斗生效，或立即回血），0.9 秒后自动刷下一个 |
+| 普通敌人 | 击败后按 `Drop.rate` 掉落 buff（下一场战斗生效，或立即回血），并掉落金币；0.9 秒后自动刷下一个 |
 | BOSS | 进入关卡时在 `[a, b]` 里随机一个 c；击败 c 个普通敌人后，下一个刷出来的就是 BOSS（面板显示「距 BOSS N」） |
-| 击败 BOSS | 掉落**装备**（永久保存到本地存档），然后重新掷 c，继续刷普通敌人 |
+| 击败 BOSS | 掉落**装备**（永久保存到本地存档）+ 一大笔金币，然后重新掷 c，继续刷普通敌人 |
 | 装备 | 玩家面板有「武器 / 护甲」两个按钮，点开弹窗选择/卸下；属性在**每次战斗开始时**结算 |
-| 玩家阵亡 | 弹窗 → 退出关卡（装备和存档不会丢） |
+| 金币 | 每击败一个敌人掉落 `敌人 Gold × sqrt(ln(a)+1)`（a = 本次关卡死亡次数），金币永久保存 |
+| 被击败 | **不退出关卡**：扣 `80` 金币，按 `复活血量 = hp_origin / a`（a 最多算到 5）复活，继续打同一个敌人 |
+| 负债 | 金币被扣成负数就进入负债：**不能买东西**，并且每满 60 秒扣「当前负债的 5%」当利息 |
+| 商店 | 不在关卡里时点「商店」，用金币买装备（装备会永久保存，可以马上装备） |
 | 加速 | 右下角「加速」按钮在 **1x / 1.5x / 2x / 3x** 之间循环切换，只加快战斗推进（刷怪间隔也一起加快），按钮文字就是当前倍率 |
-| 暂停 | 打开任意弹窗（选关 / 装备 / 战败）时战斗暂停，关掉弹窗继续 |
+| 暂停 | 打开任意弹窗（选关 / 装备 / 商店）时战斗暂停，关掉弹窗继续 |
 | 退出 | 任何时候点「退出」回到选关状态 |
 
 > 战斗进度、防御值、距 BOSS 个数、当前掉落都显示在对应面板上；最近 10 条战斗记录在玩家面板下方的「终端」里。
@@ -91,6 +94,21 @@ export const AGILITY_DIRECTION = -1;  // -1 = 敏捷越高越强（当前默认�
 
 之前按 `+1` 实测过：玩家（敏捷 6）打狐狸（敏捷 3）命中率只有 16.7%，狐狸打玩家 91.7%，必输。所以默认用 `-1`。
 
+### 3.6 货币 / 复活 / 负债（`Economy.ts`）
+
+```
+击败敌人掉落金币 = 敌人 Gold × sqrt(ln(a) + 1)        a = 本次关卡死亡次数（a<1 按 1 算）
+被击败复活扣金币 = 80                                 扣成负数就进入负债
+复活血量        = hp_origin / a                        a 最多算到 5 → 复活血量不低于 20%
+负债利息        = 当前负债额 × 5% / 每分钟
+```
+
+- 金币、装备都存 localStorage（`crk_gold_v1` / `crk_equipment_v1`），重开预览还在。
+- 死亡次数 `a` 在每次进入关卡时清零；第一次死亡 a=1（满血复活），之后 50% / 33% / 25% / 20%，再往后固定 20%。
+- 金币倍率用的是**真实死亡次数**（不封顶），所以死得越多金币涨得越多，但复活血量已经固定 20% 了。
+- 负债利息只在游戏运行时累计（关掉预览期间不扣）；负债期间商店里所有商品都点不动。
+- 想调数值：`Economy.ts` 顶部的 `REVIVE_GOLD_COST`、`DEBT_INTEREST_RATE`、`REVIVE_MIN_RATIO`。
+
 ---
 
 ## 4. 配置文件
@@ -132,6 +150,7 @@ export const AGILITY_DIRECTION = -1;  // -1 = 敏捷越高越强（当前默认�
 | --- | --- |
 | `Hp` / `Atk` / `Def` / `Agility` / `Speed` / `Atk_gap` | 同上（`Agility` 参与玩家攻击拼点） |
 | `blockade` | **防御拼点里敌人这一方的值**，越高玩家越难防住 |
+| `Gold` | 击败后掉落的基础金币（会乘上 `sqrt(ln(a)+1)` 的死亡倍率） |
 | `Drop.type` / `Drop.rate` | 普通敌人的奖励类型与掉落概率（见 4.5） |
 | `Drop.equip` | 当 `Drop.type` 为 `Equip` 时掉落的装备 id（BOSS 用，见 4.4） |
 
@@ -162,8 +181,9 @@ export const AGILITY_DIRECTION = -1;  // -1 = 敏捷越高越强（当前默认�
 ### 4.4 `equipments.json`（装备）
 
 ```json
-"steel_sword": { "name": "钢剑", "slot": "weapon", "Atk": 4 },
-"power_armor": { "name": "动力甲", "slot": "armor", "Def": 2, "Agility": 1 }
+"rusty_sword": { "name": "旧短剑", "slot": "weapon", "Atk": 2, "price": 60 },
+"steel_sword": { "name": "钢剑", "slot": "weapon", "Atk": 4, "price": 150 },
+"power_armor": { "name": "动力甲", "slot": "armor", "Def": 2, "Agility": 1, "price": 260 }
 ```
 
 | 字段 | 含义 |
@@ -171,8 +191,10 @@ export const AGILITY_DIRECTION = -1;  // -1 = 敏捷越高越强（当前默认�
 | `name` | 显示名 |
 | `slot` | `weapon`（武器槽）或 `armor`（护甲槽） |
 | `Atk` / `Def` / `Agility` | 战斗开始时加成的属性（`Def` 加的是“每次防御骰获得的防御值”） |
+| `price` | 商店售价（金币）；不配会按 0 金币出售 |
 
-- BOSS 掉落装备后**永久保存**在浏览器 localStorage（key：`crk_equipment_v1`），重开预览也还在。
+- 装备来源有两个：**BOSS 掉落**（免费）和**商店购买**（花金币）。
+- 装备**永久保存**在浏览器 localStorage（key：`crk_equipment_v1`），重开预览也还在。
 - 同一件装备只会在背包里存在一份；换槽位、卸下都会立即保存。
 
 ### 4.5 普通敌人掉落（`BattleCore.ts` 的 `DROP_EFFECTS`）
@@ -194,11 +216,12 @@ export const AGILITY_DIRECTION = -1;  // -1 = 敏捷越高越强（当前默认�
 assets/
   scenes/Battle.scene          Canvas + Camera + Game(BattleGame) —— 场景里只有骨架，UI 全部由代码创建
   scripts/
-    BattleCore.ts              纯逻辑：攻击/防御拼点、敌人 100% 伤害、BOSS 进度、掉落判定（不依赖 cc）
+    BattleCore.ts              纯逻辑：攻击/防御拼点、敌人 100% 伤害、BOSS 进度、复活暂停、掉落判定（不依赖 cc）
+    Economy.ts                 金币 / 复活血量 / 死亡倍率 / 负债利息 + localStorage 存档
     Equipment.ts               装备数据、属性加成、localStorage 永久存档
     Config.ts                  resources.load 读取四份 JSON + 启动校验
     UIFactory.ts               面板/文字/按钮/弹窗（用 Graphics 画，不需要任何图片资源）
-    BattleGame.ts              主流程组件：布局、阶段切换、事件播报、选关/装备/战败弹窗
+    BattleGame.ts              主流程组件：布局、阶段切换、金币结算、复活、选关/装备/商店弹窗
   resources/config/*.json      player / enemies / levels / equipments
 docs/layout.png                UI 布局示意图（按 BattleGame.ts 里的坐标画的近似稿）
 ```
@@ -209,11 +232,12 @@ docs/layout.png                UI 布局示意图（按 BattleGame.ts 里的坐�
 
 | 草图 | 实现 |
 | --- | --- |
-| 左侧大框「玩家信息、终端」 | 属性 + 武器/护甲两个装备按钮 + 底部 10 行战斗记录 |
+| 左侧大框「玩家信息、终端」 | 属性 + **金币**（负债变红并显示每分钟利息） + 武器/护甲两个装备按钮 + 底部 8 行战斗记录 |
 | 右上框「敌人、关卡信息」 | 左半边敌人（名字/生命/攻击/防御/敏捷/封锁/进度），右半边关卡（关卡/难度/击杀/距 BOSS/掉落），中间竖线分隔 |
 | 中右「攻击色子」 | 两颗骰子 + 和值 + 命中结果 + **当前攻击伤害** + 命中率 + 蓄力进度 |
 | 中右「防御色子」 | 两颗骰子 + 和值 + 防御结果 + **当前防御值** + 成功率 + 下次防御倒计时 |
 | 左下「退出」 | 按钮，回到选关状态 |
+| 底部「商店」 | 按钮，不在关卡里时可用，弹出商店窗口买装备 |
 | 右下「选关」 | 按钮，弹出关卡选择窗口 |
 | 右下角「加速」 | 按钮，在 1x / 1.5x / 2x / 3x 之间循环，按钮文字显示当前倍率 |
 
@@ -231,14 +255,18 @@ node "C:\ProgramData\cocos\editors\Creator\3.8.8\resources\app.asar.unpacked\nod
      -p tsconfig.json --noEmit --skipLibCheck
 ```
 
-- **纯逻辑自测**：`BattleCore.ts` 不依赖 `cc`，可以编译成 commonjs 后在 node 里跑：
+- **纯逻辑自测**：`BattleCore.ts` / `Economy.ts` 不依赖 `cc`（`Economy` 只有存档用到 `sys.localStorage`），可以编译成 commonjs 后在 node 里跑：
 
 ```powershell
-node "<同上>/typescript/lib/tsc.js" assets/scripts/BattleCore.ts `
+node "<同上>/typescript/lib/tsc.js" assets/scripts/BattleCore.ts assets/scripts/Economy.ts `
      --target ES2019 --module commonjs --outDir tools/build --skipLibCheck
 ```
 
-用 `createUnit / Battle / newLevelProgress` 就能复现整个战斗循环（敌人 100% 命中、防御值累积、BOSS 进度、掉落）。
+> 独立编译没带项目 tsconfig 的话会提示一条 `Cannot find module 'cc'`（`Economy.ts` 里存档用到 `sys.localStorage`），
+> 不影响生成的 js，测试脚本里用一个假的 `cc` 模块顶上就行。项目内（`tsc -p tsconfig.json`）是没有这个报错的。
+
+用 `createUnit / Battle / newLevelProgress` 就能复现整个战斗循环（敌人 100% 命中、防御值累积、BOSS 进度、倒下→复活、掉落）。
+补充：`Battle` 在玩家血量为 0 时**不会结束**，而是发 `playerDown` 事件并暂停，外部调 `battle.revive(hp)` 后继续。
 当前数值的模拟结果（每关跑 200 个随机种子）：
 
 | 配置 | 平均击杀 | 打到 BOSS | 击杀 BOSS |
@@ -247,6 +275,8 @@ node "<同上>/typescript/lib/tsc.js" assets/scripts/BattleCore.ts `
 | forest 带钢剑 | 12.8 | 100% | 100% |
 | factory 空装备 | 2.0 | 5% | 0% |
 | factory 带钢剑+动力甲 | 5.0 | 62% | 16% |
+
+带复活的经济模拟（森林，100 个种子）：平均击杀 30.5 个、复活 7.4 次、结束时平均还剩 91.5 金币 —— 复活费（80/次）基本能把一轮的收入吃掉，想攒钱进商店就得少死。
 
 - **配置校验**：`Config.ts` 启动时会检查四份 JSON（空文件、`constructor` 这类禁用键名、
   关卡引用了不存在的敌人、`spawn_rate` 之和、`blockade` / `def_gap` 等新字段、
@@ -266,3 +296,8 @@ node "<同上>/typescript/lib/tsc.js" assets/scripts/BattleCore.ts `
 8. **关卡选择**：点「选关」弹窗，随时可以换关卡（换了就重开本轮）。
 9. **敌人中文名**：写在 `BattleGame.ts` 的 `ENEMY_NAMES` 里，没配的敌人直接显示 id。
 10. **配置键名**：`constructor` / `__proto__` / `prototype` 不能当 JSON 键名，见第 4 节。
+11. **复活血量**：`a`（死亡次数）最多算到 5，复活血量不低于 20%；第一次死亡 a=1 也就是满血复活。
+12. **金币倍率**：`sqrt(ln(a)+1)` 用的是**真实死亡次数**（不封顶），和复活血量的 a 是分开算的。
+13. **复活费**：固定 80 金币/次（`Economy.ts` 的 `REVIVE_GOLD_COST`），可以扣成负数进负债。
+14. **负债利息**：每满 60 秒扣一次「当前负债 × 5%」，只在游戏运行时累计；负债期间商店全部不可购买。
+15. **死亡不再退出关卡**：原来的战败弹窗已经去掉了，想结束本轮只能点「退出」。

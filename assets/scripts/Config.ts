@@ -89,7 +89,7 @@ function warnMissingNumbers(label: string, source: unknown, keys: string[]): voi
 }
 
 const PLAYER_KEYS = ['Hp', 'Sp', 'Atk', 'Agility', 'Def', 'Atk_gap', 'Speed', 'def_gap'];
-const ENEMY_KEYS = ['Hp', 'Atk', 'Atk_gap', 'Speed', 'Def', 'Agility', 'blockade'];
+const ENEMY_KEYS = ['Hp', 'Atk', 'Atk_gap', 'Speed', 'Def', 'Agility', 'blockade', 'Gold'];
 
 /** 敌人表检查：数值字段、掉落类型、装备掉落是否配了 equipments */
 function checkEnemies(enemies: EnemiesData, equipments: EquipmentsData): void {
@@ -157,6 +157,9 @@ function checkEquipments(equipments: EquipmentsData): void {
         if (!cfg || !cfg.name) console.warn(`[Config] 装备 ${id} 缺少 name`);
         if (!cfg || (cfg.slot !== 'weapon' && cfg.slot !== 'armor')) {
             console.warn(`[Config] 装备 ${id} 的 slot 只能是 weapon 或 armor`);
+        }
+        if (!cfg || typeof cfg.price !== 'number') {
+            console.warn(`[Config] 装备 ${id} 没有配 price，商店里会按 0 金币出售`);
         }
     }
 }

@@ -48,6 +48,8 @@ export interface EnemyConfig {
     Atk_gap: number;
     Speed: number;
     Def: number;
+    /** 击败后掉落的基础金币（会乘上死亡次数倍率） */
+    Gold: number;
     Drop: DropConfig;
     Agility: number;
     /** 防御拼点用的“封锁”值：越高玩家越难防住 */
@@ -333,6 +335,8 @@ export type BattleEvent =
     | { kind: 'enemySwing' }
     /** 敌人造成伤害：absorbed 是被防御值吃掉的部分，damage 是实际掉的血 */
     | { kind: 'enemyHit'; damage: number; absorbed: number; defense: number; playerHp: number }
+    /** 玩家被打倒：战斗暂停，等外部 revive() 复活后继续打同一个敌人 */
+    | { kind: 'playerDown' }
     /** 战斗结束 */
     | { kind: 'end'; winner: Side };
 
@@ -348,6 +352,8 @@ export class Battle {
     private readonly random: RandomFn;
     private events: BattleEvent[] = [];
     private over = false;
+    /** 玩家已经倒下，正在等外部 revive() */
+    private playerDown = false;
     private defTimer = 0;
     private lastDefenseDice: DiceRoll | null = null;
 
@@ -371,6 +377,24 @@ export class Battle {
         return this.over;
     }
 
+    /** 玩家是否倒在地上等复活（外部算好血量后调 revive()） */
+    get waitingRevive(): boolean {
+        return this.playerDown;
+    }
+
+    /**
+     * 复活：外部扣完金币、算好血量后调用，战斗继续打同一个敌人。
+     * 防御值和敌人血量都不重置（还是同一场战斗）。
+     */
+    revive(hp: number): void {
+        if (this.over) return;
+        this.playerDown = false;
+        this.player.hp = Math.max(1, Math.min(this.player.maxHp, Math.round(hp)));
+        this.player.dead = false;
+        this.player.acting = 0;
+        this.player.charge = 0;
+    }
+
     /** 防御骰计时进度 0-1（界面上显示用） */
     get defenseProgress(): number {
         return this.player.defGap > 0 ? Math.min(1, this.defTimer / this.player.defGap) : 0;
@@ -391,6 +415,9 @@ export class Battle {
     }
 
     private tick(dt: number): void {
+        // 玩家倒下等复活时整个战场暂停
+        if (this.playerDown) return;
+
         // 1) 玩家攻击：先结算，保证「同归于尽」时判玩家赢
         this.tickAttack(this.player, dt, true);
 
@@ -472,9 +499,10 @@ export class Battle {
             kind: 'enemyHit', damage: hpLoss, absorbed, defense: this.defense, playerHp: this.player.hp,
         });
         if (this.player.hp <= 0) {
+            // 玩家倒下：不结束战斗，等外部 revive()（复活后继续打同一个敌人）
             this.player.dead = true;
-            this.over = true;
-            this.events.push({ kind: 'end', winner: 'enemy' });
+            this.playerDown = true;
+            this.events.push({ kind: 'playerDown' });
         }
     }
 

@@ -1,13 +1,21 @@
 {
+  "rusty_sword": {
+    "name": "旧短剑",
+    "slot": "weapon",
+    "Atk": 2,
+    "price": 60
+  },
   "steel_sword": {
     "name": "钢剑",
     "slot": "weapon",
-    "Atk": 4
+    "Atk": 4,
+    "price": 150
   },
   "power_armor": {
     "name": "动力甲",
     "slot": "armor",
     "Def": 2,
-    "Agility": 1
+    "Agility": 1,
+    "price": 260
   }
 }
