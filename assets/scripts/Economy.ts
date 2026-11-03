@@ -6,22 +6,32 @@ import { START_GOLD, slotKey } from './Save';
  * 纯计算函数都能脱离 cc 用（只有读写存档用到 sys.localStorage）。
  */
 
-/** 死亡惩罚：本局盈利时扣 2.5%（最低 80）；本局亏损时扣亏损额的 5%（最低 100） */
-export const REVIVE_PROFIT_RATE = 0.025;
+/** 死亡惩罚基础比例：本局盈利 4.5%（最低 80）、本局亏损 5%（最低 100），每多死一次 +0.5% */
+export const REVIVE_PROFIT_RATE = 0.045;
 export const REVIVE_PROFIT_MIN = 80;
 export const REVIVE_LOSS_RATE = 0.05;
 export const REVIVE_LOSS_MIN = 100;
+/** 每多死一次，惩罚比例 +0.5% */
+export const REVIVE_RATE_STEP = 0.005;
+
+/** 这一次死亡适用的比例：基础比例 + 之前死过的次数 × 0.5% */
+export function deathPenaltyRate(profit: number, deathsBefore: number): number {
+    const base = profit > 0 ? REVIVE_PROFIT_RATE : REVIVE_LOSS_RATE;
+    return base + REVIVE_RATE_STEP * Math.max(0, Math.floor(deathsBefore));
+}
 
 /**
  * 一次死亡要扣的金币：
  *   本局盈亏 = 当前金币 - 进关时金币
- *   盈利 > 0 → max(80, 盈利 × 2.5%)
- *   亏损 ≤ 0 → max(100, 亏损额 × 5%)
+ *   比例 = 盈利 4.5% / 亏损 5%，每多死一次再 +0.5%
+ *   盈利 → max(80, 盈利 × 比例)
+ *   亏损 → max(100, 亏损额 × 比例)
  */
-export function deathPenalty(gold: number, goldAtLevelStart: number): number {
+export function deathPenalty(gold: number, goldAtLevelStart: number, deathsBefore = 0): number {
     const profit = gold - goldAtLevelStart;
-    if (profit > 0) return Math.max(REVIVE_PROFIT_MIN, Math.round(profit * REVIVE_PROFIT_RATE));
-    return Math.max(REVIVE_LOSS_MIN, Math.round(-profit * REVIVE_LOSS_RATE));
+    const rate = deathPenaltyRate(profit, deathsBefore);
+    const min = profit > 0 ? REVIVE_PROFIT_MIN : REVIVE_LOSS_MIN;
+    return Math.max(min, Math.round(Math.abs(profit) * rate));
 }
 
 /** 负债利息：每分钟扣「当前负债额」的 5% */

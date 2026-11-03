@@ -12,8 +12,8 @@ import type {
 import { loadGameConfig } from './Config';
 import type { GameConfig } from './Config';
 import {
-    DEBT_INTEREST_RATE, deathPenalty, formatGold, goldDrop, goldMultiplier, interestAmount, isInDebt, loadGold,
-    multiplierDeaths, reviveHp, saveGold,
+    DEBT_INTEREST_RATE, deathPenalty, deathPenaltyRate, formatGold, goldDrop, goldMultiplier, interestAmount,
+    isInDebt, loadGold, multiplierDeaths, reviveHp, saveGold,
 } from './Economy';
 import {
     calcEquipBonus, equipItem, equipmentName, equipmentSummary, equippedId, hasEquipment, loadEquipmentState,
@@ -780,11 +780,11 @@ export class BattleGame extends Component {
         if (!battle || !player) return;
 
         const profit = this.gold - this.goldAtLevelStart;
-        const penalty = deathPenalty(this.gold, this.goldAtLevelStart);
+        // 注意：这里用的是「这次死亡之前」的死亡次数，第一次死亡不加成
+        const rate = deathPenaltyRate(profit, this.deaths);
+        const penalty = deathPenalty(this.gold, this.goldAtLevelStart, this.deaths);
         this.deaths += 1;
-        this.applyGold(-penalty, profit > 0
-            ? `复活扣款（盈利 ${profit} 的 2.5%）`
-            : `复活扣款（亏损 ${profit} 的 5%）`);
+        this.applyGold(-penalty, `复活扣款（本局${profit > 0 ? '盈利' : '亏损'} ${Math.abs(profit)} × ${(rate * 100).toFixed(1)}%）`);
 
         const hp = reviveHp(player.maxHp, this.deaths);
         this.log(`第 ${this.deaths} 次被击败，扣 ${penalty} 金币，按 ${hp} 血复活`);
