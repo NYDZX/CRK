@@ -32,6 +32,8 @@ import {
 import {
     getActiveSlot, loadActiveSlot, migrateLegacySave, setActiveSlot,
 } from './Save';
+import { bestProfit, loadRecords, saveRecords, submitProfit } from './Records';
+import type { LevelRecords } from './Records';
 
 const { ccclass } = _decorator;
 
@@ -205,6 +207,8 @@ export class BattleGame extends Component {
     private playerTitle: Label | null = null;
     /** 当前存档槽（1..SLOT_COUNT） */
     private slotIndex = 1;
+    /** 每关的单局最高盈利（跟着存档槽存） */
+    private records: LevelRecords = {};
 
     /** 策略弹窗的滚动列表 */
     private stratListContent: Node | null = null;
@@ -250,6 +254,7 @@ export class BattleGame extends Component {
         this.centerText(popup.content, 0, 12, 15, COLOR_MUTED, false, '所有进度都已经保存，可以随时从这里回来');
 
         const yes = createButton(popup.content, 'ExitSaveYes', '是', 190, 58, () => {
+            this.recordLevelProfit();
             this.log(`退出存档 ${this.slotIndex}`);
             director.loadScene('SaveSelect', (err) => {
                 if (err) console.error('[BattleGame] 返回存档选择失败', err);
@@ -402,6 +407,18 @@ export class BattleGame extends Component {
         this.gold = loadGold();
         this.charProgress = loadProgress();
         this.effects = buildEffects(this.charProgress.slots);
+        this.records = loadRecords();
+    }
+
+    /** 结算本局盈亏：刷新该关最高盈利纪录 */
+    private recordLevelProfit(): void {
+        const levelId = this.levelId;
+        if (!this.level || !levelId) return;
+        const profit = this.gold - this.goldAtLevelStart;
+        if (submitProfit(this.records, levelId, profit)) {
+            saveRecords(this.records);
+            this.log(`本关最高盈利刷新：+${profit} 金币`);
+        }
     }
 
     /** 配置读不出来时把原因显示在敌人面板上（比只打进控制台更容易看到） */
@@ -476,6 +493,7 @@ export class BattleGame extends Component {
 
     /** 点「退出」或战败弹窗退出：回到选关状态 */
     private exitLevel(): void {
+        if (this.phase === 'battle') this.recordLevelProfit();
         this.runId += 1;
         this.phase = this.config ? 'select' : 'loading';
         this.battle = null;
@@ -981,6 +999,7 @@ export class BattleGame extends Component {
             `难度  ${level ? level.diff : '-'}`,
             `击杀  ${this.kills}     距 BOSS  ${level ? bossRemaining(this.progress) : '-'}`,
             `BOSS  ${this.bossKills}     强化  ${Math.floor(this.bossKills / BOSS_TIER_KILLS)} 档`,
+            `最高盈利  +${bestProfit(this.records, this.levelId)}`,
             `掉落  ${this.lastDrop}`,
         ].join('\n');
     }
@@ -1278,24 +1297,26 @@ export class BattleGame extends Component {
     private showLevelPopup(): void {
         const config = this.config;
         if (!config) return;
-        const popup = this.openPopup('选择关卡', 560, 460);
+        const popup = this.openPopup('选择关卡', 680, 470);
         const ids = Object.keys(config.levels);
-        const rowHeight = 66;
-        const top = (460 - 96) / 2 - 46;
+        const rowHeight = 74;
+        const top = (470 - 96) / 2 - 50;
         ids.forEach((id, index) => {
             const level = config.levels[id];
             const bossId = level.boss ? level.boss.enemy : '';
             const bossName = bossId ? lookupName(ENEMY_NAMES, bossId) : '无';
             const bossRange = level.boss ? `（${level.boss.a}~${level.boss.b} 个普通敌人后）` : '';
-            const text = `${level.name || id}    难度 ${level.diff}    BOSS ${bossName}${bossRange}`;
-            const button = createButton(popup.content, `Level-${id}`, text, 480, rowHeight, () => {
+            const best = bestProfit(this.records, id);
+            const text = `${level.name || id}    难度 ${level.diff}    BOSS ${bossName}${bossRange}`
+                + `\n最高盈利  +${best}`;
+            const button = createButton(popup.content, `Level-${id}`, text, 620, rowHeight, () => {
                 popup.close();
                 this.startLevel(id);
-            }, 18);
+            }, 16);
             button.node.setPosition(0, top - index * (rowHeight + 14), 0);
         });
 
-        const close = createButton(popup.content, 'CloseLevelPopup', '关闭', 480, rowHeight, () => {
+        const close = createButton(popup.content, 'CloseLevelPopup', '关闭', 620, rowHeight, () => {
             popup.close();
         }, 18);
         close.node.setPosition(0, top - ids.length * (rowHeight + 14), 0);

@@ -98,6 +98,7 @@ export function resetSlot(index: number): void {
         sys.localStorage.removeItem(slotKey('gold', index));
         sys.localStorage.removeItem(slotKey('equipment', index));
         sys.localStorage.removeItem(slotKey('progress', index));
+        sys.localStorage.removeItem(slotKey('records', index));
     } catch (err) {
         console.warn(`[Save] 清空存档 ${index} 失败`, err);
     }
