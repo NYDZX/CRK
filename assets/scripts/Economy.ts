@@ -14,6 +14,12 @@ export const DEBT_INTEREST_RATE = 0.05;
 /** 复活血量下限：hp_origin / 5（也就是 a 最多算到 5） */
 export const REVIVE_MIN_RATIO = 1 / 5;
 
+/** 一局内死亡超过这个次数后：金币倍率重新从 1 级开始算，复活血量固定 10% */
+export const REVIVE_RESET_DEATHS = 15;
+
+/** 死亡超过 15 次后的固定复活血量比例 */
+export const LATE_REVIVE_RATIO = 0.1;
+
 /** 金币存档 key */
 const GOLD_KEY = 'crk_gold_v1';
 
@@ -42,16 +48,24 @@ export function saveGold(gold: number): void {
  * 第 deaths 次死亡后的复活血量：
  *   hp_revive = hp_origin / a      （a = 死亡次数，第一次死亡 a = 1）
  *   当 hp_revive < hp_origin / 5 时把 a 固定住（也就是最多算到 a = 5，复活血量不低于 20%）
+ *   一局内死亡超过 REVIVE_RESET_DEATHS 次之后，复活血量固定为 10%
  */
 export function reviveHp(maxHp: number, deaths: number): number {
     const a = Math.max(1, Math.floor(deaths));
+    if (a > REVIVE_RESET_DEATHS) return Math.max(1, Math.round(maxHp * LATE_REVIVE_RATIO));
     const cappedA = Math.min(a, Math.round(1 / REVIVE_MIN_RATIO));
     return Math.max(1, Math.round(maxHp / cappedA));
 }
 
-/** 金币掉落倍率：sqrt(ln(a) + 1)，a = 死亡次数（a < 1 时按 1 算，倍率 = 1） */
-export function goldMultiplier(deaths: number): number {
+/** 倍率用的「有效死亡次数」：一局内死亡超过 15 次后重新从 1 开始数（倍率回到 1.0x 再往上涨） */
+export function multiplierDeaths(deaths: number): number {
     const a = Math.max(1, Math.floor(deaths));
+    return a > REVIVE_RESET_DEATHS ? a - REVIVE_RESET_DEATHS : a;
+}
+
+/** 金币掉落倍率：sqrt(ln(a) + 1)，a = 有效死亡次数（超过 15 次死亡后重新从 1 算） */
+export function goldMultiplier(deaths: number): number {
+    const a = multiplierDeaths(deaths);
     return Math.sqrt(Math.log(a) + 1);
 }
 

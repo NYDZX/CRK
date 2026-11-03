@@ -293,7 +293,14 @@ export interface StrategyEffects {
     lowInterest: boolean;
     agilityPlus: boolean;
     glassCannon: boolean;
+    /** 自动护盾：每场战斗开始先给 AUTO_SHIELD 点护盾（玩家防御在 BattleGame 里 ×0.9） */
+    autoShield: boolean;
+    /** 血瓶：每场战斗结束回血（血量由 BattleGame 结算） */
+    healthPotion: boolean;
 }
+
+/** 策略「自动护盾」每场战斗开始时给的护盾值 */
+export const AUTO_SHIELD = 15;
 
 export interface UnitInit {
     side: Side;
@@ -519,6 +526,11 @@ export class Battle {
         enemy.acting = 0;
         enemy.dice = null;
         enemy.dead = enemy.hp <= 0;
+
+        // 策略「自动护盾」：这场战斗一开始就先有 15 点护盾
+        if (player.effects && player.effects.autoShield) {
+            this.defense = AUTO_SHIELD;
+        }
     }
 
     get finished(): boolean {

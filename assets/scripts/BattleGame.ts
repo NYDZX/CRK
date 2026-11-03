@@ -12,7 +12,7 @@ import { loadGameConfig } from './Config';
 import type { GameConfig } from './Config';
 import {
     DEBT_INTEREST_RATE, REVIVE_GOLD_COST, formatGold, goldDrop, goldMultiplier, interestAmount, isInDebt, loadGold,
-    reviveHp, saveGold,
+    multiplierDeaths, reviveHp, saveGold,
 } from './Economy';
 import {
     calcEquipBonus, equipItem, equipmentName, equipmentSummary, equippedId, hasEquipment, loadEquipmentState,
@@ -63,6 +63,9 @@ const CHART_H = 56;
 
 /** 「自杀式袭击」策略的强制结束时间（按 1x 速度的真实秒数） */
 const SUICIDE_TIME_LIMIT = 50;
+
+/** 策略「血瓶」每场战斗结束回复的血量 */
+const HEAL_AFTER_BATTLE = 10;
 
 /** 敌人 id -> 中文名（只用于显示，取不到就直接显示 id） */
 const ENEMY_NAMES: { [id: string]: string } = {
@@ -249,11 +252,11 @@ export class BattleGame extends Component {
         this.refreshGoldText();
     }
 
-    /** 当前金币倍率：基础 sqrt(ln(a)+1)；奖杯每次提升额外 +0.2；低利率不随死亡上涨 */
+    /** 当前金币倍率：基础 sqrt(ln(a)+1)；奖杯每次提升额外 +0.2；低利率不随死亡上涨（死亡 >15 次后重新从 1 计） */
     private currentGoldMultiplier(): number {
         if (this.effects.lowInterest) return 1;
         let mult = goldMultiplier(this.deaths);
-        if (this.effects.trophy) mult += 0.2 * Math.max(0, this.deaths - 1);
+        if (this.effects.trophy) mult += 0.2 * Math.max(0, multiplierDeaths(this.deaths) - 1);
         return mult;
     }
 
@@ -272,6 +275,7 @@ export class BattleGame extends Component {
             atk *= 3;
             def = 0;
         }
+        if (this.effects.autoShield) def = Math.round(def * 0.9);
         const agility = config.player.Agility + (this.effects.agilityPlus ? 1 : 0);
         return { atk, def, agility };
     }
@@ -587,6 +591,13 @@ export class BattleGame extends Component {
 
         this.kills += 1;
         this.log(`击败 ${enemy.name}`);
+
+        // 策略「血瓶」：每场战斗结束回 10 点血
+        const playerUnit = this.playerUnit;
+        if (this.effects.healthPotion && playerUnit) {
+            playerUnit.hp = Math.min(playerUnit.maxHp, playerUnit.hp + HEAL_AFTER_BATTLE);
+            this.log(`血瓶：战斗结束回复 ${HEAL_AFTER_BATTLE} 血（${playerUnit.hp} / ${playerUnit.maxHp}）`);
+        }
 
         const enemyConfig: EnemyConfig | undefined = Object.prototype.hasOwnProperty.call(config.enemies, enemy.id)
             ? config.enemies[enemy.id]

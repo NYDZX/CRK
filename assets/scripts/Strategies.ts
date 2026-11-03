@@ -66,6 +66,16 @@ export const STRATEGIES: StrategyDef[] = [
         name: '玻璃大炮',
         desc: '攻击 ×3，防御 = 0',
     },
+    {
+        id: 'autoShield',
+        name: '自动护盾',
+        desc: '每场战斗开始 +15 护盾，但玩家防御 ×0.9',
+    },
+    {
+        id: 'healthPotion',
+        name: '血瓶',
+        desc: '每场战斗结束回复 10 点血量',
+    },
 ];
 
 export const STRATEGY_BY_ID: { [id: string]: StrategyDef } = (() => {
@@ -94,6 +104,8 @@ export function buildEffects(ids: Array<string | null | undefined>): StrategyEff
         lowInterest: has('lowInterest'),
         agilityPlus: has('agility'),
         glassCannon: has('glassCannon'),
+        autoShield: has('autoShield'),
+        healthPotion: has('healthPotion'),
     };
 }
 
