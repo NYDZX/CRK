@@ -1,6 +1,6 @@
 import {
-    _decorator, Color, Component, Director, director, EventKeyboard, Graphics, Input, KeyCode, Label, Layers, Node,
-    UITransform, input,
+    _decorator, Color, Component, Director, director, EventKeyboard, EventMouse, EventTouch, Graphics, Input,
+    KeyCode, Label, Layers, Mask, Node, UITransform, Vec3, input,
 } from 'cc';
 import {
     Battle, bossRemaining, calcDamage, createUnit, hitChance, newLevelProgress, pickEnemy, progressAfterBossKill,
@@ -67,6 +67,14 @@ const CHART_H = 56;
 
 /** 「自杀式袭击」策略的强制结束时间（按 1x 速度的真实秒数） */
 const SUICIDE_TIME_LIMIT = 50;
+
+/** 策略弹窗里可滚动列表的尺寸与行高 */
+const STRAT_LIST_W = 560;
+const STRAT_LIST_H = 244;
+const STRAT_LIST_Y = -64;
+const STRAT_ROW_STEP = 44;
+/** 滚动条的可拖动宽度（画出来只有 10px，热区宽一点好抓） */
+const STRAT_TRACK_W = 24;
 
 /** 策略「血瓶」每场战斗结束回复的血量 */
 const HEAL_AFTER_BATTLE = 10;
@@ -196,6 +204,16 @@ export class BattleGame extends Component {
     /** 当前存档槽（1..SLOT_COUNT） */
     private slotIndex = 1;
 
+    /** 策略弹窗的滚动列表 */
+    private stratListContent: Node | null = null;
+    private stratRows: Node[] = [];
+    private stratBar: Graphics | null = null;
+    private stratTrack: Node | null = null;
+    private stratScroll = 0;
+    private stratMaxScroll = 0;
+    /** 拖动滚动条时，手指与滑块中心的偏移 */
+    private stratDragOffset = 0;
+
     /** 战斗速度倍率（1 / 1.5 / 2 / 3） */
     private speedFactor = 1;
 
@@ -205,11 +223,13 @@ export class BattleGame extends Component {
         this.buildUi();
         this.syncCanvasSize(true);
         input.on(Input.EventType.KEY_UP, this.onKeyUp, this);
+        input.on(Input.EventType.MOUSE_WHEEL, this.onMouseWheel, this);
         void this.bootstrap();
     }
 
     protected onDestroy(): void {
         input.off(Input.EventType.KEY_UP, this.onKeyUp, this);
+        input.off(Input.EventType.MOUSE_WHEEL, this.onMouseWheel, this);
     }
 
     /** Esc：问一下要不要退出当前存档（回到存档选择场景） */
@@ -1218,6 +1238,14 @@ export class BattleGame extends Component {
         const popup = this.popup;
         this.popup = null;
         if (popup && popup.isValid) popup.destroy();
+        // 策略列表的引用跟着弹窗一起清掉（滚轮监听要能判断“现在没有列表”）
+        this.stratListContent = null;
+        this.stratBar = null;
+        this.stratTrack = null;
+        this.stratRows = [];
+        this.stratScroll = 0;
+        this.stratMaxScroll = 0;
+        this.stratDragOffset = 0;
     }
 
     /** 选关弹窗：列出 levels.json 里所有关卡 */
@@ -1312,18 +1340,50 @@ export class BattleGame extends Component {
             button.node.setPosition(-totalW / 2 + slotW / 2 + i * (slotW + gap), 130, 0);
         }
 
-        // 已获得但没装的策略（最多列 7 条，避免超出弹窗）
-        this.centerText(popup.content, 0, 82, 14, COLOR_MUTED, false, '拥有的策略（点击装进空槽）');
+        // 已获得但没装的策略：放在可滚动列表里（滚轮上下滚）
+        this.centerText(popup.content, 0, 82, 14, COLOR_MUTED, false,
+            '拥有的策略（点击装进空槽 · 滚轮或拖动右侧滑块滚动）');
         const unused = this.charProgress.owned.filter((id) => slots.indexOf(id) < 0);
+
+        const viewport = createUINode('StrategyList', popup.content);
+        setSize(viewport, STRAT_LIST_W, STRAT_LIST_H);
+        viewport.setPosition(0, STRAT_LIST_Y, 0);
+        viewport.addComponent(Mask).type = Mask.Type.GRAPHICS_RECT;
+
+        const contentHeight = Math.max(STRAT_LIST_H, unused.length * STRAT_ROW_STEP);
+        const content = createUINode('content', viewport);
+        setSize(content, STRAT_LIST_W, contentHeight);
+        setAnchor(content, 0.5, 1);
+        this.stratListContent = content;
+
+        // 右侧滚动条：槽 + 滑块，同时兼作拖动用的热区（比只画 8px 好抓）
+        const track = createUINode('ScrollTrack', viewport);
+        setSize(track, STRAT_TRACK_W, STRAT_LIST_H);
+        track.setPosition(STRAT_LIST_W / 2 - STRAT_TRACK_W / 2, 0, 0);
+        this.stratTrack = track;
+        this.stratBar = track.addComponent(Graphics);
+        track.on(Node.EventType.TOUCH_START, (event: EventTouch) => {
+            event.propagationStopped = true;
+            this.startTrackDrag(event);
+        }, this);
+        track.on(Node.EventType.TOUCH_MOVE, (event: EventTouch) => {
+            event.propagationStopped = true;
+            this.dragTrack(event);
+        }, this);
+        track.on(Node.EventType.TOUCH_END, (event: EventTouch) => {
+            event.propagationStopped = true;
+        }, this);
+
+        this.stratRows = [];
         if (unused.length === 0) {
-            this.centerText(popup.content, 0, 30, 15, COLOR_MUTED, false, '没有可装备的策略：每升 2 级随机获得一个');
+            this.centerText(content, 0, -STRAT_LIST_H / 2, 15, COLOR_MUTED, false,
+                '没有可装备的策略：每升 2 级随机获得一个');
         }
-        const shown = unused.slice(0, 7);
-        let y = 56;
-        for (const id of shown) {
+        for (let i = 0; i < unused.length; i += 1) {
+            const id = unused[i];
             const def = Object.prototype.hasOwnProperty.call(STRATEGY_BY_ID, id) ? STRATEGY_BY_ID[id] : null;
             const text = def ? `${def.name}    ${def.desc}` : id;
-            const button = createButton(popup.content, `Own-${id}`, text, 560, 40, () => {
+            const button = createButton(content, `Own-${id}`, text, STRAT_LIST_W - 34, 40, () => {
                 const empty = slots.indexOf(null);
                 if (empty < 0) {
                     this.log('策略槽满了，先点上面的槽位卸下一个');
@@ -1332,16 +1392,108 @@ export class BattleGame extends Component {
                 slots[empty] = id;
                 this.applyStrategyChange(`装备 ${strategyName(id)}`);
             }, 13);
-            button.node.setPosition(0, y, 0);
-            y -= 44;
-        }
-        if (unused.length > shown.length) {
-            this.centerText(popup.content, 0, y + 6, 13, COLOR_MUTED, false,
-                `还有 ${unused.length - shown.length} 条没显示，先装备/卸下再看`);
+            // 下拉菜单的行一般都是左对齐的
+            button.label.horizontalAlign = Label.HorizontalAlign.LEFT;
+            button.node.setPosition(0, -STRAT_ROW_STEP / 2 - i * STRAT_ROW_STEP, 0);
+            this.stratRows.push(button.node);
         }
 
+        this.stratScroll = 0;
+        this.stratMaxScroll = Math.max(0, contentHeight - STRAT_LIST_H);
+        this.applyStrategyScroll();
+
         const close = createButton(popup.content, 'CloseStrategy', '关闭', 560, 36, () => popup.close(), 16);
-        close.node.setPosition(0, -238, 0);
+        close.node.setPosition(0, -232, 0);
+    }
+
+    /** 滚轮：`getScrollY()` 向上为正，所以往下滚(delta<0)时 stratScroll 变大 = 列表往下翻 */
+    private onMouseWheel(event: EventMouse): void {
+        if (!this.popup || !this.stratListContent || this.stratMaxScroll <= 0) return;
+        const delta = event.getScrollY();
+        if (!delta) return;
+        this.stratScroll += delta > 0 ? -STRAT_ROW_STEP : STRAT_ROW_STEP;
+        this.applyStrategyScroll();
+    }
+
+    /** 滑块高度：内容越多滑块越短（最少 24） */
+    private strategyThumbHeight(): number {
+        if (this.stratMaxScroll <= 0) return STRAT_LIST_H;
+        const total = STRAT_LIST_H + this.stratMaxScroll;
+        return Math.max(24, (STRAT_LIST_H * STRAT_LIST_H) / total);
+    }
+
+    /** 滑块中心在滚动槽里的局部 y */
+    private strategyThumbCenter(): number {
+        const half = STRAT_LIST_H / 2;
+        const thumbH = this.strategyThumbHeight();
+        const range = Math.max(1, STRAT_LIST_H - thumbH);
+        const ratio = this.stratMaxScroll > 0 ? this.stratScroll / this.stratMaxScroll : 0;
+        return half - ratio * range - thumbH / 2;
+    }
+
+    /** 按住滚动条：记下手指和滑块中心的偏移，再直接点一下也能跳过去 */
+    private startTrackDrag(event: EventTouch): void {
+        const local = this.trackLocalY(event);
+        if (local === null) return;
+        this.stratDragOffset = local - this.strategyThumbCenter();
+        this.dragTrack(event);
+    }
+
+    /** 拖动滚动条：滑块中心跟着鼠标走 */
+    private dragTrack(event: EventTouch): void {
+        if (this.stratMaxScroll <= 0) return;
+        const local = this.trackLocalY(event);
+        if (local === null) return;
+        const half = STRAT_LIST_H / 2;
+        const thumbH = this.strategyThumbHeight();
+        const range = Math.max(1, STRAT_LIST_H - thumbH);
+        const center = local - this.stratDragOffset;
+        const ratio = Math.min(1, Math.max(0, (half - thumbH / 2 - center) / range));
+        this.stratScroll = ratio * this.stratMaxScroll;
+        this.applyStrategyScroll();
+    }
+
+    /** 触摸点换算到滚动槽的局部坐标 y（超出范围返回 null） */
+    private trackLocalY(event: EventTouch): number | null {
+        const track = this.stratTrack;
+        if (!track || !track.isValid) return null;
+        const transform = track.getComponent(UITransform);
+        if (!transform) return null;
+        const ui = event.getUILocation();
+        const local = transform.convertToNodeSpaceAR(new Vec3(ui.x, ui.y, 0));
+        return local.y;
+    }
+
+    /** 把滚动量套到列表上：移动内容、隐藏滚出视口的行、重画滚动条 */
+    private applyStrategyScroll(): void {
+        const content = this.stratListContent;
+        if (!content || !content.isValid) return;
+        this.stratScroll = Math.max(0, Math.min(this.stratMaxScroll, this.stratScroll));
+        // 内容锚点在顶部：往下滚 = 内容整体上移（y 变大），露出下面几条
+        content.setPosition(0, STRAT_LIST_H / 2 + this.stratScroll, 0);
+
+        // Mask 只裁渲染不裁点击，滚出视口的行要一起关掉
+        const half = STRAT_LIST_H / 2;
+        for (const row of this.stratRows) {
+            if (!row.isValid) continue;
+            const y = row.position.y + content.position.y;
+            row.active = y + 20 > -half && y - 20 < half;
+        }
+
+        const bar = this.stratBar;
+        if (!bar || !bar.node.isValid) return;
+        bar.clear();
+        if (this.stratMaxScroll <= 0) return; // 不用滚就不画滚动条
+        // 槽
+        bar.fillColor = new Color(228, 228, 228, 255);
+        bar.rect(-5, -half, 10, STRAT_LIST_H);
+        bar.fill();
+        // 滑块
+        const thumbH = this.strategyThumbHeight();
+        const center = this.strategyThumbCenter();
+        bar.fillColor = new Color(140, 140, 140, 255);
+        bar.rect(-5, center - thumbH / 2, 10, thumbH);
+        bar.fill();
     }
 
     /** 装备/卸下策略：存盘 + 重建效果（从下一场战斗开始生效） */
