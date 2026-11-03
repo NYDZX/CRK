@@ -1,4 +1,5 @@
 import { sys } from 'cc';
+import { START_GOLD, slotKey } from './Save';
 
 /**
  * 经济系统：金币、复活、负债利息、金币掉落倍率。
@@ -23,22 +24,22 @@ export const LATE_REVIVE_RATIO = 0.1;
 /** 金币存档 key */
 const GOLD_KEY = 'crk_gold_v1';
 
-/** 读金币存档（BOSS/敌人掉的金币永久保存） */
+/** 金币存档 key 跟着当前存档槽走，读不到数据时按新存档的 100 金币算 */
 export function loadGold(): number {
     try {
-        const raw = sys.localStorage.getItem(GOLD_KEY);
-        if (!raw) return 0;
+        const raw = sys.localStorage.getItem(slotKey('gold'));
+        if (raw === null) return START_GOLD;
         const value = Number(raw);
-        return Number.isFinite(value) ? Math.round(value) : 0;
+        return Number.isFinite(value) ? Math.round(value) : START_GOLD;
     } catch (err) {
         console.warn('[Economy] 读取金币失败，按 0 处理', err);
-        return 0;
+        return START_GOLD;
     }
 }
 
 export function saveGold(gold: number): void {
     try {
-        sys.localStorage.setItem(GOLD_KEY, String(Math.round(gold)));
+        sys.localStorage.setItem(slotKey('gold'), String(Math.round(gold)));
     } catch (err) {
         console.warn('[Economy] 写入金币失败', err);
     }

@@ -1,5 +1,6 @@
 import {
-    _decorator, Color, Component, Director, director, Graphics, Label, Layers, Node, UITransform,
+    _decorator, Color, Component, Director, director, EventKeyboard, Graphics, Input, KeyCode, Label, Layers, Node,
+    UITransform, input,
 } from 'cc';
 import {
     Battle, bossRemaining, calcDamage, createUnit, hitChance, newLevelProgress, pickEnemy, progressAfterBossKill,
@@ -28,6 +29,9 @@ import {
     ButtonView, COLOR_MUTED, COLOR_TEXT, TextOptions, createButton, createPanel, createPopup, createText,
     createUINode, setAnchor, setSize,
 } from './UIFactory';
+import {
+    getActiveSlot, loadActiveSlot, migrateLegacySave, setActiveSlot,
+} from './Save';
 
 const { ccclass } = _decorator;
 
@@ -187,6 +191,10 @@ export class BattleGame extends Component {
     private effects: StrategyEffects = emptyEffects();
     /** 玩家面板上的等级/经验行 */
     private progressText: Label | null = null;
+    /** 玩家面板标题（显示当前存档） */
+    private playerTitle: Label | null = null;
+    /** 当前存档槽（1..SLOT_COUNT） */
+    private slotIndex = 1;
 
     /** 战斗速度倍率（1 / 1.5 / 2 / 3） */
     private speedFactor = 1;
@@ -196,7 +204,39 @@ export class BattleGame extends Component {
     protected start(): void {
         this.buildUi();
         this.syncCanvasSize(true);
+        input.on(Input.EventType.KEY_UP, this.onKeyUp, this);
         void this.bootstrap();
+    }
+
+    protected onDestroy(): void {
+        input.off(Input.EventType.KEY_UP, this.onKeyUp, this);
+    }
+
+    /** Esc：问一下要不要退出当前存档（回到存档选择场景） */
+    private onKeyUp(event: EventKeyboard): void {
+        if (event.keyCode !== KeyCode.ESCAPE) return;
+        if (this.popup) {
+            this.closePopup();
+            return;
+        }
+        this.askExitSave();
+    }
+
+    private askExitSave(): void {
+        const popup = this.openPopup('退出存档', 540, 300);
+        this.centerText(popup.content, 0, 58, 20, COLOR_TEXT, true, `退出「存档 ${this.slotIndex}」？`);
+        this.centerText(popup.content, 0, 12, 15, COLOR_MUTED, false, '所有进度都已经保存，可以随时从这里回来');
+
+        const yes = createButton(popup.content, 'ExitSaveYes', '是', 190, 58, () => {
+            this.log(`退出存档 ${this.slotIndex}`);
+            director.loadScene('SaveSelect', (err) => {
+                if (err) console.error('[BattleGame] 返回存档选择失败', err);
+            });
+        }, 18);
+        yes.node.setPosition(-115, -78, 0);
+
+        const no = createButton(popup.content, 'ExitSaveNo', '否', 190, 58, () => this.closePopup(), 18);
+        no.node.setPosition(115, -78, 0);
     }
 
     protected update(dt: number): void {
@@ -272,8 +312,8 @@ export class BattleGame extends Component {
             def = tmp;
         }
         if (this.effects.glassCannon) {
+            // 玻璃大炮：攻击 ×3，代价是防御骰必然最小值（在 BattleCore 里实现，这里不改 def）
             atk *= 3;
-            def = 0;
         }
         if (this.effects.autoShield) def = Math.round(def * 0.9);
         const agility = config.player.Agility + (this.effects.agilityPlus ? 1 : 0);
@@ -313,10 +353,9 @@ export class BattleGame extends Component {
     // ---------------- 启动 / 流程 ----------------
 
     private async bootstrap(): Promise<void> {
-        this.equipState = loadEquipmentState();
-        this.gold = loadGold();
-        this.charProgress = loadProgress();
-        this.effects = buildEffects(this.charProgress.slots);
+        migrateLegacySave();
+        setActiveSlot(loadActiveSlot());
+        this.loadSlotData();
         try {
             this.config = await loadGameConfig();
         } catch (err) {
@@ -332,6 +371,15 @@ export class BattleGame extends Component {
         }
         this.levelId = levelIds[0];
         this.exitLevel();
+    }
+
+    /** 把当前存档槽的数据读进内存（存档槽由 SaveSelect 场景选好并写进 localStorage） */
+    private loadSlotData(): void {
+        this.slotIndex = getActiveSlot();
+        this.equipState = loadEquipmentState();
+        this.gold = loadGold();
+        this.charProgress = loadProgress();
+        this.effects = buildEffects(this.charProgress.slots);
     }
 
     /** 配置读不出来时把原因显示在敌人面板上（比只打进控制台更容易看到） */
@@ -757,6 +805,7 @@ export class BattleGame extends Component {
 
     /** 等级 / 经验那一行 */
     private refreshProgressText(): void {
+        if (this.playerTitle) this.playerTitle.string = `玩家 · 存档 ${this.slotIndex}`;
         if (!this.progressText) return;
         const level = this.charProgress.level;
         this.progressText.string = `Lv.${level}   经验 ${this.charProgress.exp} / ${expToNext(level)}`;
@@ -1022,7 +1071,7 @@ export class BattleGame extends Component {
         const panel = createPanel(root, 'PlayerPanel', w, h);
         panel.node.setPosition(x, y, 0);
 
-        this.leftText(panel.node, '玩家', -w / 2 + 22, h / 2 - 36, 26, COLOR_TEXT, true);
+        this.playerTitle = this.leftText(panel.node, '玩家 · 存档 1', -w / 2 + 22, h / 2 - 36, 24, COLOR_TEXT, true);
         this.playerText = this.blockText(panel.node, -w / 2 + 22, h / 2 - 82, w - 44, 18, 26);
         this.progressText = this.leftText(panel.node, 'Lv.1   经验 0 / 100', -w / 2 + 22, 92, 16, COLOR_TEXT, true);
         this.goldText = this.leftText(panel.node, '金币  0', -w / 2 + 22, 66, 17, COLOR_TEXT, true);
@@ -1267,7 +1316,7 @@ export class BattleGame extends Component {
         this.centerText(popup.content, 0, 82, 14, COLOR_MUTED, false, '拥有的策略（点击装进空槽）');
         const unused = this.charProgress.owned.filter((id) => slots.indexOf(id) < 0);
         if (unused.length === 0) {
-            this.centerText(popup.content, 0, 30, 15, COLOR_MUTED, false, '没有可装备的策略：每升 5 级随机获得一个');
+            this.centerText(popup.content, 0, 30, 15, COLOR_MUTED, false, '没有可装备的策略：每升 2 级随机获得一个');
         }
         const shown = unused.slice(0, 7);
         let y = 56;

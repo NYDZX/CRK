@@ -64,7 +64,7 @@ export const STRATEGIES: StrategyDef[] = [
     {
         id: 'glassCannon',
         name: '玻璃大炮',
-        desc: '攻击 ×3，防御 = 0',
+        desc: '攻击 ×3，防御骰必然投出最小值',
     },
     {
         id: 'autoShield',

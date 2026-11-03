@@ -1,4 +1,5 @@
 import { sys } from 'cc';
+import { slotKey } from './Save';
 
 /** 装备槽：武器 / 护甲 */
 export type EquipSlot = 'weapon' | 'armor';
@@ -37,16 +38,14 @@ export const SLOT_LABEL: { [slot: string]: string } = {
     armor: '护甲',
 };
 
-const STORAGE_KEY = 'crk_equipment_v1';
-
 export function createEmptyState(): EquipmentState {
     return { inventory: [], weapon: null, armor: null };
 }
 
-/** 读存档（BOSS 掉落“永久保存”，存在 localStorage 里，重开游戏也还在） */
+/** 读存档（BOSS 掉落“永久保存”，按当前存档槽存在 localStorage 里，重开游戏也还在） */
 export function loadEquipmentState(): EquipmentState {
     try {
-        const raw = sys.localStorage.getItem(STORAGE_KEY);
+        const raw = sys.localStorage.getItem(slotKey('equipment'));
         if (!raw) return createEmptyState();
         const parsed = JSON.parse(raw) as Partial<EquipmentState>;
         const inventory = Array.isArray(parsed.inventory)
@@ -65,7 +64,7 @@ export function loadEquipmentState(): EquipmentState {
 
 export function saveEquipmentState(state: EquipmentState): void {
     try {
-        sys.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        sys.localStorage.setItem(slotKey('equipment'), JSON.stringify(state));
     } catch (err) {
         console.warn('[Equipment] 写入本地存档失败', err);
     }

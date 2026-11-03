@@ -1,20 +1,22 @@
 import { sys } from 'cc';
 import { MAX_SLOTS, STRATEGIES } from './Strategies';
+import { slotKey } from './Save';
 
 /**
  * 玩家养成进度：等级 / 经验 / 已获得的策略 / 策略槽。
- * 和金币、装备一样存在 localStorage（永久保存）。
+ * 和金币、装备一样存在 localStorage（按存档槽分开，永久保存）。
  */
 export interface PlayerProgress {
     level: number;
     exp: number;
-    /** 已获得的策略 id（每 5 级随机给一个，不会重复给） */
+    /** 已获得的策略 id（每升 2 级随机给一个，不会重复给） */
     owned: string[];
     /** 策略槽：长度固定 MAX_SLOTS，装的是策略 id 或 null */
     slots: Array<string | null>;
 }
 
-const STORAGE_KEY = 'crk_progress_v1';
+/** 每升多少级给一个策略 */
+export const STRATEGY_LEVEL_STEP = 2;
 
 /** 升级经验曲线：E(n) = EXP_BASE * n^EXP_POWER，n = 当前等级（1 级升 2 级 = 100） */
 export const EXP_BASE = 100;
@@ -56,7 +58,7 @@ function sanitize(raw: Partial<PlayerProgress> | null): PlayerProgress {
 
 export function loadProgress(): PlayerProgress {
     try {
-        const raw = sys.localStorage.getItem(STORAGE_KEY);
+        const raw = sys.localStorage.getItem(slotKey('progress'));
         if (!raw) return createProgress();
         return sanitize(JSON.parse(raw) as Partial<PlayerProgress>);
     } catch (err) {
@@ -67,7 +69,7 @@ export function loadProgress(): PlayerProgress {
 
 export function saveProgress(progress: PlayerProgress): void {
     try {
-        sys.localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
+        sys.localStorage.setItem(slotKey('progress'), JSON.stringify(progress));
     } catch (err) {
         console.warn('[Progress] 写入等级存档失败', err);
     }
@@ -100,7 +102,7 @@ export function gainExp(progress: PlayerProgress, amount: number, random: () => 
         progress.level += 1;
         result.levelsUp += 1;
         guard += 1;
-        if (progress.level % 5 === 0) {
+        if (progress.level % STRATEGY_LEVEL_STEP === 0) {
             const id = pickNewStrategy(progress.owned, random);
             if (id) {
                 progress.owned.push(id);

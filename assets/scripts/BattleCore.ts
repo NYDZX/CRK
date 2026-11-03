@@ -292,6 +292,7 @@ export interface StrategyEffects {
     suicide: boolean;
     lowInterest: boolean;
     agilityPlus: boolean;
+    /** 玻璃大炮：玩家攻击 ×3，且防御骰必然投出最小值（1+1） */
     glassCannon: boolean;
     /** 自动护盾：每场战斗开始先给 AUTO_SHIELD 点护盾（玩家防御在 BattleGame 里 ×0.9） */
     autoShield: boolean;
@@ -381,11 +382,15 @@ export function isFibonacci(value: number): boolean {
 
 /**
  * 按已装备的策略投一次骰子。
- * 顺序：先投 2d6 → 二面骰子把每颗骰子锁成 1/6 → 斐波那契把每颗骰子锁成 2/3/5 → 奇数性做面值变换。
+ * 顺序：先投 2d6 → 二面骰子把每颗骰子锁成 1/6 → 斐波那契把每颗骰子锁成 2/3/5
+ *      → 玻璃大炮把**防御骰**强制锁成最小值 1+1 → 奇数性做面值变换。
+ *
+ * forDefense = true 表示这是防御骰（玻璃大炮只影响防御骰）。
  */
 export function rollByStrategy(
     effects: StrategyEffects | undefined,
     random: RandomFn = defaultRandom,
+    forDefense = false,
 ): RollOutcome {
     let a = 1 + Math.floor(random() * DICE_FACES);
     let b = 1 + Math.floor(random() * DICE_FACES);
@@ -409,6 +414,14 @@ export function rollByStrategy(
             a = fibFaces[Math.floor(random() * fibFaces.length) % fibFaces.length];
             b = fibFaces[Math.floor(random() * fibFaces.length) % fibFaces.length];
         }
+    }
+
+    // 玻璃大炮：防御骰必然投出最小值（1+1），直接盖掉上面算出来的面值
+    if (forDefense && effects && effects.glassCannon) {
+        a = 1;
+        b = 1;
+        twoFaceMax = false;
+        twoFaceMin = !!(effects && effects.twoFace);
     }
 
     let forceHit = false;
@@ -640,7 +653,7 @@ export class Battle {
     /** 按已装备策略投一次骰，并处理「二面骰子」的连续最小值冷却 */
     private rollFor(isAttack: boolean): RollOutcome {
         const effects = this.player.effects;
-        const out = rollByStrategy(effects, this.random);
+        const out = rollByStrategy(effects, this.random, !isAttack);
         if (effects && effects.twoFace) {
             let streak = isAttack ? this.atkStreak : this.defStreak;
             if (out.twoFaceMax) streak = 0;
