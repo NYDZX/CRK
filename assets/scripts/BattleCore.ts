@@ -303,6 +303,60 @@ export interface StrategyEffects {
 /** 策略「自动护盾」每场战斗开始时给的护盾值 */
 export const AUTO_SHIELD = 15;
 
+/** ---------------- 关卡内 BOSS 强化 ---------------- */
+
+/** 每击败这么多个 BOSS，本关敌人强化一档 */
+export const BOSS_TIER_KILLS = 5;
+/** 攻击力每档 ×1.25，最高 5 倍 */
+export const BOSS_ATK_STEP = 1.25;
+export const BOSS_ATK_CAP = 5;
+/** 生命值每档 ×1.5，最高 10 倍 */
+export const BOSS_HP_STEP = 1.5;
+export const BOSS_HP_CAP = 10;
+/** 攻击速度（= 攻击间隔的倒数）每档 ×1.25，最高 3 倍 */
+export const BOSS_SPEED_STEP = 1.25;
+export const BOSS_SPEED_CAP = 3;
+/** 敏捷每档 +1，但不会超过主角敏捷 +4 */
+export const BOSS_AGILITY_LEAD = 4;
+
+export interface EnemyBaseStats {
+    atk: number;
+    hp: number;
+    agility: number;
+    /** 攻击间隔（秒），越小越快 */
+    speed: number;
+}
+
+export interface EscalatedStats extends EnemyBaseStats {
+    tier: number;
+}
+
+/**
+ * 本关 BOSS 强化：击败 5 个 BOSS 后敌人整体变强一档，
+ * 攻击 ×1.25（≤5 倍）、生命 ×1.5（≤10 倍）、敏捷 +1（不超过主角 +4）、攻击速度 ×1.25（≤3 倍）。
+ */
+export function escalateEnemyStats(
+    base: EnemyBaseStats,
+    bossKills: number,
+    playerAgility: number,
+): EscalatedStats {
+    const tier = Math.floor(Math.max(0, bossKills) / BOSS_TIER_KILLS);
+    if (tier <= 0) return { tier: 0, atk: base.atk, hp: base.hp, agility: base.agility, speed: base.speed };
+
+    const atkMul = Math.min(Math.pow(BOSS_ATK_STEP, tier), BOSS_ATK_CAP);
+    const hpMul = Math.min(Math.pow(BOSS_HP_STEP, tier), BOSS_HP_CAP);
+    const speedMul = Math.min(Math.pow(BOSS_SPEED_STEP, tier), BOSS_SPEED_CAP);
+    const agilityCap = Math.max(base.agility, playerAgility + BOSS_AGILITY_LEAD);
+    return {
+        tier,
+        atk: Math.round(base.atk * atkMul),
+        hp: Math.round(base.hp * hpMul),
+        agility: Math.min(base.agility + tier, agilityCap),
+        // 「攻击速度 ×1.25」= 间隔缩短，所以这里是除
+        speed: base.speed / speedMul,
+    };
+}
+
 export interface UnitInit {
     side: Side;
     id: string;

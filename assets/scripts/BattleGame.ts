@@ -3,8 +3,8 @@ import {
     KeyCode, Label, Layers, Mask, Node, UITransform, Vec3, input,
 } from 'cc';
 import {
-    Battle, bossRemaining, calcDamage, createUnit, hitChance, newLevelProgress, pickEnemy, progressAfterBossKill,
-    progressAfterNormalKill, rollDrop, DROP_EFFECTS,
+    BOSS_TIER_KILLS, Battle, bossRemaining, calcDamage, createUnit, escalateEnemyStats, hitChance, newLevelProgress,
+    pickEnemy, progressAfterBossKill, progressAfterNormalKill, rollDrop, DROP_EFFECTS,
 } from './BattleCore';
 import type {
     BattleEvent, DiceRoll, DropEffect, EnemyConfig, LevelConfig, LevelProgress, StrategyEffects, Unit,
@@ -12,7 +12,7 @@ import type {
 import { loadGameConfig } from './Config';
 import type { GameConfig } from './Config';
 import {
-    DEBT_INTEREST_RATE, REVIVE_GOLD_COST, formatGold, goldDrop, goldMultiplier, interestAmount, isInDebt, loadGold,
+    DEBT_INTEREST_RATE, deathPenalty, formatGold, goldDrop, goldMultiplier, interestAmount, isInDebt, loadGold,
     multiplierDeaths, reviveHp, saveGold,
 } from './Economy';
 import {
@@ -130,6 +130,8 @@ export class BattleGame extends Component {
     /** 装备（BOSS 掉落永久保存） */
     private equipState: EquipmentState = { inventory: [], weapon: null, armor: null };
     private kills = 0;
+    /** 本关已击败的 BOSS 个数（每 5 个给敌人强化一档） */
+    private bossKills = 0;
     private lastDrop = '——';
     private logs: string[] = [];
     private phase: Phase = 'loading';
@@ -430,6 +432,7 @@ export class BattleGame extends Component {
         this.levelId = levelId;
         this.level = level;
         this.kills = 0;
+        this.bossKills = 0;
         this.lastDrop = '——';
         this.logs = [];
         this.playerMods = { atk: 0, agility: 0 };
@@ -482,6 +485,7 @@ export class BattleGame extends Component {
         this.progress = { normalKills: 0, bossTarget: 0, bossPending: false };
         this.spawnedBoss = false;
         this.kills = 0;
+        this.bossKills = 0;
         this.lastDrop = '——';
         this.logs = [];
         this.closePopup();
@@ -529,16 +533,28 @@ export class BattleGame extends Component {
         this.refreshPlayerStats();
         this.playerMods = { atk: 0, agility: 0 };
 
+        // 本关 BOSS 强化：每击败 5 个 BOSS，敌人攻击/生命/敏捷/攻速各涨一档（有上限）
+        const escalated = escalateEnemyStats(
+            {
+                atk: enemyConfig.Atk,
+                hp: enemyConfig.Hp,
+                agility: enemyConfig.Agility,
+                speed: enemyConfig.Speed,
+            },
+            this.bossKills,
+            player.agility,
+        );
+
         const enemy = createUnit({
             side: 'enemy',
             id: enemyId,
             name: lookupName(ENEMY_NAMES, enemyId),
-            hp: enemyConfig.Hp,
-            maxHp: enemyConfig.Hp,
-            atk: enemyConfig.Atk,
+            hp: escalated.hp,
+            maxHp: escalated.hp,
+            atk: escalated.atk,
             def: enemyConfig.Def,
-            agility: enemyConfig.Agility,
-            speed: enemyConfig.Speed,
+            agility: escalated.agility,
+            speed: escalated.speed,
             atkGap: enemyConfig.Atk_gap,
             blockade: enemyConfig.blockade,
             special: enemyConfig.special,
@@ -692,6 +708,11 @@ export class BattleGame extends Component {
         if (isBoss) {
             this.progress = progressAfterBossKill(this.progress, this.level ? this.level.boss : undefined, Math.random);
             this.spawnedBoss = false;
+            this.bossKills += 1;
+            const tier = Math.floor(this.bossKills / BOSS_TIER_KILLS);
+            if (this.bossKills % BOSS_TIER_KILLS === 0) {
+                this.log(`已击败 ${this.bossKills} 个 BOSS：本关敌人强化到第 ${tier} 档`);
+            }
             this.log(`BOSS 已击败，下一个 BOSS 前还要打 ${bossRemaining(this.progress)} 个普通敌人`);
         } else {
             this.progress = progressAfterNormalKill(this.progress);
@@ -750,7 +771,7 @@ export class BattleGame extends Component {
     }
 
     /**
-     * 玩家被击败：不退出关卡，扣一笔金币后按公式复活继续打同一个敌人。
+     * 玩家被击败：不退出关卡，按本局盈亏扣一笔金币后复活继续打同一个敌人。
      * 复活血量 = hp_origin / a（a = 死亡次数，a 最多算到 5，也就是不低于 20%）。
      */
     private onPlayerDown(): void {
@@ -758,11 +779,15 @@ export class BattleGame extends Component {
         const player = this.playerUnit;
         if (!battle || !player) return;
 
+        const profit = this.gold - this.goldAtLevelStart;
+        const penalty = deathPenalty(this.gold, this.goldAtLevelStart);
         this.deaths += 1;
-        this.applyGold(-REVIVE_GOLD_COST, '复活扣款');
+        this.applyGold(-penalty, profit > 0
+            ? `复活扣款（盈利 ${profit} 的 2.5%）`
+            : `复活扣款（亏损 ${profit} 的 5%）`);
 
         const hp = reviveHp(player.maxHp, this.deaths);
-        this.log(`第 ${this.deaths} 次被击败，按 ${hp} 血复活`);
+        this.log(`第 ${this.deaths} 次被击败，扣 ${penalty} 金币，按 ${hp} 血复活`);
         if (isInDebt(this.gold)) {
             this.log(`金币 ${formatGold(this.gold)}，进入负债：每分钟扣负债的利息`);
         }
@@ -955,6 +980,7 @@ export class BattleGame extends Component {
             `关卡  ${level ? this.levelName() : '——'}`,
             `难度  ${level ? level.diff : '-'}`,
             `击杀  ${this.kills}     距 BOSS  ${level ? bossRemaining(this.progress) : '-'}`,
+            `BOSS  ${this.bossKills}     强化  ${Math.floor(this.bossKills / BOSS_TIER_KILLS)} 档`,
             `掉落  ${this.lastDrop}`,
         ].join('\n');
     }

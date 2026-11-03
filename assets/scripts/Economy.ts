@@ -6,8 +6,23 @@ import { START_GOLD, slotKey } from './Save';
  * 纯计算函数都能脱离 cc 用（只有读写存档用到 sys.localStorage）。
  */
 
-/** 每次被击败复活要扣的金币（扣成负数就进入负债） */
-export const REVIVE_GOLD_COST = 80;
+/** 死亡惩罚：本局盈利时扣 2.5%（最低 80）；本局亏损时扣亏损额的 5%（最低 100） */
+export const REVIVE_PROFIT_RATE = 0.025;
+export const REVIVE_PROFIT_MIN = 80;
+export const REVIVE_LOSS_RATE = 0.05;
+export const REVIVE_LOSS_MIN = 100;
+
+/**
+ * 一次死亡要扣的金币：
+ *   本局盈亏 = 当前金币 - 进关时金币
+ *   盈利 > 0 → max(80, 盈利 × 2.5%)
+ *   亏损 ≤ 0 → max(100, 亏损额 × 5%)
+ */
+export function deathPenalty(gold: number, goldAtLevelStart: number): number {
+    const profit = gold - goldAtLevelStart;
+    if (profit > 0) return Math.max(REVIVE_PROFIT_MIN, Math.round(profit * REVIVE_PROFIT_RATE));
+    return Math.max(REVIVE_LOSS_MIN, Math.round(-profit * REVIVE_LOSS_RATE));
+}
 
 /** 负债利息：每分钟扣「当前负债额」的 5% */
 export const DEBT_INTEREST_RATE = 0.05;
