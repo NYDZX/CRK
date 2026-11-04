@@ -3,12 +3,16 @@ import {
     KeyCode, Label, Layers, Mask, Node, UITransform, Vec3, input,
 } from 'cc';
 import {
-    BOSS_TIER_KILLS, Battle, bossRemaining, calcDamage, createUnit, escalateEnemyStats, hitChance, newLevelProgress,
-    pickEnemy, progressAfterBossKill, progressAfterNormalKill, rollDrop, DROP_EFFECTS,
+    BOSS_TIER_KILLS, bossRemaining, createUnit, escalateEnemyStats, newLevelProgress, pickEnemy, progressAfterBossKill,
+    progressAfterNormalKill, rollDrop, DROP_EFFECTS,
 } from './BattleCore';
 import type {
-    BattleEvent, DiceRoll, DropEffect, EnemyConfig, LevelConfig, LevelProgress, StrategyEffects, Unit,
+    DropEffect, EnemyConfig, LevelConfig, LevelProgress, StrategyEffects, Unit,
 } from './BattleCore';
+import { SkillBattle, defaultEnemyAttackFace, defaultEnemyDefenseFace } from './BattleEngine';
+import type { SkillBattleEvent } from './BattleEngine';
+import { faceRangeText, skillById, skillName, skillsOfKind } from './Skills';
+import type { SkillKind } from './Skills';
 import { loadGameConfig } from './Config';
 import type { GameConfig } from './Config';
 import {
@@ -125,7 +129,7 @@ export class BattleGame extends Component {
     private levelId = '';
     private level: LevelConfig | null = null;
     private progress: LevelProgress = { normalKills: 0, bossTarget: 0, bossPending: false };
-    private battle: Battle | null = null;
+    private battle: SkillBattle | null = null;
     private playerUnit: Unit | null = null;
     /** 下一场战斗才生效的临时增益（普通敌人掉落） */
     private playerMods: Mods = { atk: 0, agility: 0 };
@@ -164,19 +168,25 @@ export class BattleGame extends Component {
     private enemyStatus: Label | null = null;
     private levelText: Label | null = null;
 
-    private attackDice: Label[] = [];
-    private attackSum: Label | null = null;
+    private attackTitle: Label | null = null;
+    private attackInfo: Label | null = null;
+    private attackFaces: Label[] = [];
     private attackResult: Label | null = null;
-    private attackDamage: Label | null = null;
-    private attackChance: Label | null = null;
     private attackStatus: Label | null = null;
+    private attackSwitchButton: ButtonView | null = null;
 
-    private defenseDice: Label[] = [];
-    private defenseSum: Label | null = null;
+    private defenseTitle: Label | null = null;
+    private defenseInfo: Label | null = null;
+    private defenseFaces: Label[] = [];
     private defenseResult: Label | null = null;
-    private defenseValue: Label | null = null;
-    private defenseChance: Label | null = null;
     private defenseStatus: Label | null = null;
+    private defenseSwitchButton: ButtonView | null = null;
+
+    private pauseButton: ButtonView | null = null;
+    /** 暂停中（按住空格或点暂停按钮） */
+    private paused = false;
+    private pauseHeld = false;
+    private pauseToggled = false;
 
     private exitButton: ButtonView | null = null;
     private selectButton: ButtonView | null = null;
@@ -229,23 +239,101 @@ export class BattleGame extends Component {
         this.buildUi();
         this.syncCanvasSize(true);
         input.on(Input.EventType.KEY_UP, this.onKeyUp, this);
+        input.on(Input.EventType.KEY_DOWN, this.onKeyDown, this);
         input.on(Input.EventType.MOUSE_WHEEL, this.onMouseWheel, this);
         void this.bootstrap();
     }
 
     protected onDestroy(): void {
         input.off(Input.EventType.KEY_UP, this.onKeyUp, this);
+        input.off(Input.EventType.KEY_DOWN, this.onKeyDown, this);
         input.off(Input.EventType.MOUSE_WHEEL, this.onMouseWheel, this);
     }
 
-    /** Esc：问一下要不要退出当前存档（回到存档选择场景） */
+    /** Esc：问一下要不要退出当前存档（回到存档选择场景）；空格：暂停 */
     private onKeyUp(event: EventKeyboard): void {
+        if (event.keyCode === KeyCode.SPACE) {
+            this.pauseHeld = false;
+            this.applyPause();
+            return;
+        }
         if (event.keyCode !== KeyCode.ESCAPE) return;
         if (this.popup) {
             this.closePopup();
             return;
         }
         this.askExitSave();
+    }
+
+    private onKeyDown(event: EventKeyboard): void {
+        if (event.keyCode !== KeyCode.SPACE || this.pauseHeld) return;
+        // 按住空格就一直暂停
+        this.pauseHeld = true;
+        this.applyPause();
+    }
+
+    private applyPause(): void {
+        this.paused = this.pauseHeld || this.pauseToggled;
+        if (this.pauseButton) this.pauseButton.label.string = this.paused ? '继续' : '暂停';
+    }
+
+    private togglePause(): void {
+        this.pauseToggled = !this.pauseToggled;
+        this.applyPause();
+    }
+
+    /** 切换色子弹窗：列出这一类已拥有的技能 */
+    private showSkillPopup(kind: SkillKind): void {
+        const battle = this.battle;
+        const title = kind === 'attack' ? '切换攻击色子' : '切换防御色子';
+        const popup = this.openPopup(title, 720, 560);
+        if (!battle) {
+            this.centerText(popup.content, 0, 0, 18, COLOR_MUTED, false, '现在不在战斗中');
+            return;
+        }
+        const lane = kind === 'attack' ? battle.attack : battle.defense;
+        const snap = battle.snapshot();
+        this.centerText(popup.content, 0, 208, 15, COLOR_MUTED, false,
+            `能量 ${snap.energy.toFixed(1)} / ${snap.energyMax}    敏捷 ${snap.agility}/${snap.agilityMax}`
+            + `    封锁 ${snap.blockade}/${snap.blockadeMax}`);
+
+        const owned = this.charProgress.ownedSkills
+            .map((id) => skillById(id))
+            .filter((skill) => !!skill && skill.kind === kind);
+        let y = 168;
+        let shown = 0;
+        for (const skill of owned) {
+            if (!skill) continue;
+            if (y < -170) break;
+            const equipped = lane.skill.id === skill.id;
+            const text = `${skill.name}    面值 ${faceRangeText(skill)}    能耗 ${skill.energy}    恢复 ${skill.recovery}s`
+                + `\n${skill.desc}${equipped ? '    （使用中）' : ''}`;
+            const button = createButton(popup.content, `Skill-${skill.id}`, text, 640, 62, () => {
+                const result = battle.switchSkill(kind, skill.id);
+                if (!result.ok) {
+                    this.log(`切换失败：${result.reason}`);
+                } else {
+                    if (kind === 'attack') this.charProgress.attackSkill = skill.id;
+                    else this.charProgress.defenseSkill = skill.id;
+                    saveProgress(this.charProgress);
+                    this.log(`装上${kind === 'attack' ? '攻击' : '防御'}色子：${skill.name}`);
+                }
+                popup.close();
+                this.refreshAll();
+            }, 13);
+            button.node.setPosition(0, y, 0);
+            y -= 66;
+            shown += 1;
+        }
+        if (owned.length > shown) {
+            this.centerText(popup.content, 0, y + 20, 13, COLOR_MUTED, false, `还有 ${owned.length - shown} 个技能没显示`);
+        }
+        if (owned.length === 0) {
+            this.centerText(popup.content, 0, 40, 16, COLOR_MUTED, false, '还没有这类技能：升级有概率获得');
+        }
+
+        const close = createButton(popup.content, 'CloseSkillPopup', '关闭', 640, 40, () => popup.close(), 16);
+        close.node.setPosition(0, -214, 0);
     }
 
     private askExitSave(): void {
@@ -268,6 +356,7 @@ export class BattleGame extends Component {
 
     protected update(dt: number): void {
         this.syncCanvasSize(false);
+        if (this.paused) return;
         this.tickInterest(dt);
         if (this.phase !== 'battle' || !this.battle || this.battle.finished) return;
         // 弹窗打开时暂停推进，免得选装备/选关的时候被打死
@@ -284,7 +373,7 @@ export class BattleGame extends Component {
 
         const events = this.battle.update(Math.min(dt, MAX_STEP) * this.speedFactor);
         for (const event of events) this.onBattleEvent(event);
-        this.refreshStatusLines();
+        this.refreshCombatValues();
     }
 
     /** 负债利息：每满 60 秒扣一次「当前负债额 × 利率」（低利率策略是 3.5%） */
@@ -372,6 +461,7 @@ export class BattleGame extends Component {
             if (levelAtkBonus(after) > levelAtkBonus(before)) this.log('升级奖励：攻击 +1');
             if (levelDefBonus(after) > levelDefBonus(before)) this.log('升级奖励：防御 +1');
             for (const id of result.newStrategies) this.log(`获得新策略：${strategyName(id)}`);
+            for (const id of result.newSkills) this.log(`获得新技能：${skillName(id)}（战斗中可切换色子）`);
             this.refreshPlayerStats();
         }
         this.refreshPlayer();
@@ -474,9 +564,11 @@ export class BattleGame extends Component {
             atk: stats.atk + equipBonus.atk,
             def: stats.def + equipBonus.def,
             agility: stats.agility + equipBonus.agility,
-            speed: base.Speed,
-            atkGap: base.Atk_gap,
-            defGap: base.def_gap,
+            // 现在按回合算（1 回合 = 1 秒），speed/atkGap/defGap 不再影响战斗
+            speed: 1,
+            atkGap: 0.2,
+            defGap: 1,
+            blockade: base.Blockade === undefined ? 6 : base.Blockade,
             effects: this.effects,
         });
 
@@ -578,8 +670,25 @@ export class BattleGame extends Component {
             special: enemyConfig.special,
         });
 
-        this.battle = new Battle(player, enemy, level.diff, Math.random);
+        // 新引擎：双方各一对攻/防色子，1 次/秒拼点
+        const attackSkill = skillById(this.charProgress.attackSkill) || skillById('slash');
+        const defenseSkill = skillById(this.charProgress.defenseSkill) || skillById('guard');
+        if (!attackSkill || !defenseSkill) {
+            this.setAttackStatus('技能配置读不出来');
+            return;
+        }
+        const playerCfg = config.player;
+        this.battle = new SkillBattle(player, enemy, level.diff, Math.random, {
+            attackSkill,
+            defenseSkill,
+            energy: playerCfg.Energy === undefined ? 10 : playerCfg.Energy,
+            energyMax: playerCfg.Energy === undefined ? 10 : playerCfg.Energy,
+            energyRecovery: playerCfg.Energy_recovery === undefined ? 1 : playerCfg.Energy_recovery,
+            enemyAttackFace: defaultEnemyAttackFace(enemyConfig.Atk),
+            enemyDefenseFace: defaultEnemyDefenseFace(enemyConfig.blockade),
+        });
         this.spawnedBoss = isBoss;
+        this.paused = false;
         this.setDiceIdle();
         this.log(isBoss ? `BOSS 出现：${enemy.name}` : `遭遇 ${enemy.name}`);
         this.refreshAll();
@@ -587,49 +696,17 @@ export class BattleGame extends Component {
 
     // ---------------- 战斗事件 ----------------
 
-    private onBattleEvent(event: BattleEvent): void {
+    private onBattleEvent(event: SkillBattleEvent): void {
         switch (event.kind) {
-            case 'attackRoll':
-                this.onAttackRoll(event.dice);
+            case 'log':
+                this.log(event.text);
+                this.refreshAll();
                 break;
-            case 'attack':
-                this.onAttack(event);
-                break;
-            case 'defense':
-                this.onDefense(event);
-                break;
-            case 'enemySwing':
-                this.setEnemyStatus('出手…');
-                break;
-            case 'enemyHit':
-                this.onEnemyHit(event);
+            case 'gold':
+                this.applyGold(event.amount, event.reason);
                 break;
             case 'playerDown':
                 this.onPlayerDown();
-                break;
-            case 'goldBonus':
-                this.onGoldBonus(event.amount, event.source);
-                break;
-            case 'playerAgilityDown':
-                this.log(`击中 BOSS 的代价：下一次攻击敏捷降到 ${event.agility}`);
-                this.refreshCombatValues();
-                break;
-            case 'bossWeakened':
-                this.log(`完全格挡！BOSS 被削弱：敏捷 ${event.agility}，封锁 ${event.blockade}`);
-                this.refreshEnemy();
-                this.refreshCombatValues();
-                break;
-            case 'goldPercent': {
-                const profit = this.gold - this.goldAtLevelStart;
-                if (profit > 0) {
-                    const delta = -Math.max(1, Math.round(profit * Math.abs(event.percent)));
-                    this.applyGold(-delta, '策略惩罚（本局盈利）');
-                }
-                break;
-            }
-            case 'thorns':
-                this.log(`荆棘反弹 ${event.damage} 伤害（敌人剩余 ${event.enemyHp}）`);
-                this.refreshEnemy();
                 break;
             case 'end':
                 if (event.winner === 'player') this.onEnemyDefeated();
@@ -637,50 +714,6 @@ export class BattleGame extends Component {
             default:
                 break;
         }
-    }
-
-    private onAttackRoll(dice: DiceRoll): void {
-        this.showDice(this.attackDice, this.attackSum, dice);
-        if (this.attackResult) this.attackResult.string = '';
-        this.setAttackStatus(`投骰中…（阈值 ${dice.threshold}）`);
-    }
-
-    private onAttack(event: Extract<BattleEvent, { kind: 'attack' }>): void {
-        if (event.hit) {
-            this.log(`你 命中，敌人受到 ${event.damage} 伤害`);
-            if (this.attackResult) this.attackResult.string = `命中！造成 ${event.damage} 点伤害`;
-        } else {
-            this.log('你 未命中');
-            if (this.attackResult) this.attackResult.string = '未命中';
-        }
-        this.setAttackStatus(`敌人生命 ${event.enemyHp}`);
-        this.refreshPlayer();
-        this.refreshEnemy();
-    }
-
-    private onDefense(event: Extract<BattleEvent, { kind: 'defense' }>): void {
-        this.showDice(this.defenseDice, this.defenseSum, event.dice);
-        const gain = this.playerUnit ? this.playerUnit.def : 0;
-        if (event.hit) {
-            this.log(`防御成功，防御值 +${gain}（当前 ${event.defense}）`);
-            if (this.defenseResult) this.defenseResult.string = `防御成功 +${gain}（防御值 ${event.defense}）`;
-        } else {
-            this.log('防御失败');
-            if (this.defenseResult) this.defenseResult.string = '防御失败';
-        }
-        this.refreshCombatValues();
-    }
-
-    private onEnemyHit(event: Extract<BattleEvent, { kind: 'enemyHit' }>): void {
-        if (event.absorbed > 0 && event.damage > 0) {
-            this.log(`敌人命中：防御值挡下 ${event.absorbed}，你受到 ${event.damage} 伤害`);
-        } else if (event.damage <= 0) {
-            this.log(`敌人命中：防御值全部挡下（${event.absorbed}）`);
-        } else {
-            this.log(`敌人命中，你受到 ${event.damage} 伤害`);
-        }
-        this.refreshPlayer();
-        this.refreshCombatValues();
     }
 
     /** 击败敌人：普通敌人掉落 buff / BOSS 掉落装备，然后推进 BOSS 进度 */
@@ -779,15 +812,6 @@ export class BattleGame extends Component {
         this.log(`获得装备 ${equipmentName(config.equipments, id)}（永久保存，可在玩家面板装备）`);
     }
 
-    /** BOSS 特殊规则的金币结算（+10 击中 / -55 挨打），走统一的金币入口 */
-    private onGoldBonus(amount: number, source: 'hit' | 'damaged' | 'dice'): void {
-        if (!amount) return;
-        const who = this.battle ? this.battle.enemy.name : 'BOSS';
-        if (source === 'hit') this.applyGold(amount, `击中 ${who}`);
-        else if (source === 'damaged') this.applyGold(amount, `被 ${who} 打中`);
-        else this.applyGold(amount, '骰子奖励');
-    }
-
     /**
      * 玩家被击败：不退出关卡，按本局盈亏扣一笔金币后复活继续打同一个敌人。
      * 复活血量 = hp_origin / a（a = 死亡次数，a 最多算到 5，也就是不低于 20%）。
@@ -832,10 +856,8 @@ export class BattleGame extends Component {
 
     private refreshAll(): void {
         this.refreshPlayer();
-        this.refreshEnemy();
         this.refreshLevel();
         this.refreshCombatValues();
-        this.refreshStatusLines();
     }
 
     private refreshPlayer(): void {
@@ -857,7 +879,7 @@ export class BattleGame extends Component {
         this.playerText.string = [
             `生命  ${player.hp} / ${player.maxHp}`,
             `攻击  ${player.atk}${bonusText(player.atk - base.Atk)}    防御  ${player.def}${bonusText(player.def - base.Def)}`,
-            `敏捷  ${player.agility}${bonusText(player.agility - base.Agility)}    攻速 ${player.speed.toFixed(1)}s   防速 ${player.defGap.toFixed(1)}s`,
+            `敏捷  ${player.agility}${bonusText(player.agility - base.Agility)}    封锁 ${player.blockade}    每回合 1s`,
         ].join('\n');
         this.terminalText.string = this.logs.join('\n');
         this.refreshEquipButtons();
@@ -972,23 +994,31 @@ export class BattleGame extends Component {
     }
 
     private refreshEnemy(): void {
+        this.renderEnemyText();
+    }
+
+    /** 只更新敌人面板文字（不带副作用，避免和 refreshCombatValues 互相递归） */
+    private renderEnemyText(): void {
         if (!this.enemyTitle || !this.enemyText) return;
         const battle = this.battle;
         if (!battle) {
             this.enemyTitle.string = '敌人 / 关卡';
             this.enemyText.string = '——';
-            this.setEnemyStatus('');
+            if (this.enemyStatus) this.enemyStatus.string = '';
             return;
         }
         const enemy = battle.enemy;
         const bossTag = this.spawnedBoss ? '【BOSS】' : '';
         this.enemyTitle.string = `敌人 · ${enemy.name}${bossTag}`;
+        const snap = battle.snapshot();
         this.enemyText.string = [
-            `生命  ${enemy.hp} / ${enemy.maxHp}`,
+            `生命  ${enemy.hp} / ${enemy.maxHp}      防御值  ${snap.enemyDefense}`,
             `攻击  ${enemy.atk}      防御  ${enemy.def}`,
-            `敏捷  ${enemy.agility}      封锁  ${enemy.blockade}`,
+            `敏捷  ${snap.enemyAttackFace ? enemy.agility : enemy.agility}      封锁  ${enemy.blockade}`,
         ].join('\n');
-        this.refreshStatusLines();
+        if (this.enemyStatus) {
+            this.enemyStatus.string = `敌方防御色子面值 ${snap.enemyDefenseFace || '-'}   攻击色子面值 ${snap.enemyAttackFace || '-'}`;
+        }
     }
 
     private refreshLevel(): void {
@@ -999,56 +1029,69 @@ export class BattleGame extends Component {
             `难度  ${level ? level.diff : '-'}`,
             `击杀  ${this.kills}     距 BOSS  ${level ? bossRemaining(this.progress) : '-'}`,
             `BOSS  ${this.bossKills}     强化  ${Math.floor(this.bossKills / BOSS_TIER_KILLS)} 档`,
-            `最高盈利  +${bestProfit(this.records, this.levelId)}`,
+            `最高盈利  ${bestProfit(this.records, this.levelId) >= 0 ? '+' : ''}${bestProfit(this.records, this.levelId)}`,
             `掉落  ${this.lastDrop}`,
         ].join('\n');
     }
 
     /** 两个色子面板里的「当前值 + 拼点成功率」 */
+    /** 两条色子战线的实时状态（每帧刷） */
     private refreshCombatValues(): void {
         const battle = this.battle;
-        if (!this.attackChance || !this.defenseChance) return;
+        const config = this.config;
+
         if (!battle) {
-            this.attackChance.string = '';
-            this.defenseChance.string = '';
-            if (this.attackDamage) this.attackDamage.string = '';
-            if (this.defenseValue) this.defenseValue.string = '';
+            for (const label of this.attackFaces) label.string = '-';
+            for (const label of this.defenseFaces) label.string = '-';
+            if (this.attackInfo) this.attackInfo.string = '';
+            if (this.defenseInfo) this.defenseInfo.string = '';
+            if (this.attackResult) this.attackResult.string = '';
+            if (this.defenseResult) this.defenseResult.string = '';
+            // 注意：不清理 attackStatus/defenseStatus，让「点选关挑一个关卡」这类提示留着
+            this.renderEnemyText();
             return;
         }
-        const player = battle.player;
-        const enemy = battle.enemy;
-        const atk = hitChance(player.agility, enemy.agility, battle.diff);
-        const def = hitChance(player.agility, enemy.blockade, battle.diff);
-        if (this.attackDamage) this.attackDamage.string = `伤害 ${calcDamage(player.atk, enemy.def)}`;
-        if (this.defenseValue) this.defenseValue.string = `防御值 ${battle.defense}`;
-        this.attackChance.string = `命中率 ${(atk * 100).toFixed(1)}%`;
-        this.defenseChance.string = `成功率 ${(def * 100).toFixed(1)}%`;
-    }
 
-    /** 每帧刷新的进度文字（蓄力百分比 / 防御倒计时） */
-    private refreshStatusLines(): void {
-        const battle = this.battle;
-        if (!battle) return;
-        const player = battle.player;
-        const enemy = battle.enemy;
+        const snap = battle.snapshot();
+        const attack = battle.attack;
+        const defense = battle.defense;
 
+        // 攻击线
+        if (this.attackTitle) this.attackTitle.string = `攻击色子 · ${attack.skill.name}`;
+        if (this.attackInfo) {
+            this.attackInfo.string = `面值 ${faceRangeText(attack.skill)}   能耗 ${attack.skill.energy}   恢复 ${attack.skill.recovery}s`;
+        }
+        if (this.attackFaces.length >= 2) {
+            this.attackFaces[0].string = attack.broken > 0 ? '碎' : String(attack.face || '-');
+            this.attackFaces[1].string = String(snap.enemyDefenseFace || '-');
+        }
         if (this.attackStatus) {
-            if (player.dead) this.attackStatus.string = '玩家阵亡';
-            else if (player.acting > 0) this.attackStatus.string = '投骰中…';
-            else this.attackStatus.string = `蓄力 ${Math.floor((player.charge / player.speed) * 100)}%`;
+            this.attackStatus.string = `敏捷 ${snap.agility}/${snap.agilityMax}\n能量 ${snap.energy.toFixed(1)}/${snap.energyMax}`
+                + (attack.broken > 0 ? `\n破碎 ${attack.broken.toFixed(1)}s` : '');
+        }
+        if (this.attackResult) {
+            this.attackResult.string = attack.broken > 0 ? '攻击色子破碎中，无法攻击/切换' : (attack.lastText || '每秒拼点一次');
+        }
+
+        // 防御线
+        if (this.defenseTitle) this.defenseTitle.string = `防御色子 · ${defense.skill.name}`;
+        if (this.defenseInfo) {
+            this.defenseInfo.string = `面值 ${faceRangeText(defense.skill)}   能耗 ${defense.skill.energy}   恢复 ${defense.skill.recovery}s`;
+        }
+        if (this.defenseFaces.length >= 2) {
+            this.defenseFaces[0].string = defense.broken > 0 ? '碎' : String(defense.face || '-');
+            this.defenseFaces[1].string = String(snap.enemyAttackFace || '-');
         }
         if (this.defenseStatus) {
-            if (enemy.dead) this.defenseStatus.string = '敌人已被击败';
-            else {
-                const left = Math.max(0, player.defGap * (1 - battle.defenseProgress));
-                this.defenseStatus.string = `下次防御 ${left.toFixed(1)} 秒`;
-            }
+            this.defenseStatus.string = `封锁 ${snap.blockade}/${snap.blockadeMax}\n护盾 ${snap.playerDefense}`
+                + (defense.broken > 0 ? `\n破碎 ${defense.broken.toFixed(1)}s` : '');
         }
-        if (this.enemyStatus) {
-            if (enemy.dead) this.enemyStatus.string = '已被击败';
-            else if (enemy.acting > 0) this.enemyStatus.string = '出手…';
-            else this.enemyStatus.string = `蓄力 ${Math.floor((enemy.charge / enemy.speed) * 100)}%`;
+        if (this.defenseResult) {
+            this.defenseResult.string = defense.broken > 0 ? '防御色子破碎中，无法防御/切换' : (defense.lastText || '每秒拼点一次');
         }
+
+        // 敌人面板的生命/防御值也顺手更新（只更新文字，不会再回调 refreshCombatValues）
+        this.renderEnemyText();
     }
 
     private setAttackStatus(text: string): void {
@@ -1064,20 +1107,14 @@ export class BattleGame extends Component {
     }
 
     private setDiceIdle(): void {
-        for (const label of this.attackDice) label.string = '-';
-        for (const label of this.defenseDice) label.string = '-';
-        if (this.attackSum) this.attackSum.string = '= ?';
-        if (this.defenseSum) this.defenseSum.string = '= ?';
+        for (const label of this.attackFaces) label.string = '-';
+        for (const label of this.defenseFaces) label.string = '-';
         if (this.attackResult) this.attackResult.string = '';
         if (this.defenseResult) this.defenseResult.string = '';
-    }
-
-    private showDice(labels: Label[], sumLabel: Label | null, dice: DiceRoll): void {
-        if (labels.length >= 2) {
-            labels[0].string = String(dice.a);
-            labels[1].string = String(dice.b);
-        }
-        if (sumLabel) sumLabel.string = `= ${dice.sum}`;
+        if (this.attackInfo) this.attackInfo.string = '';
+        if (this.defenseInfo) this.defenseInfo.string = '';
+        if (this.attackStatus) this.attackStatus.string = '';
+        if (this.defenseStatus) this.defenseStatus.string = '';
     }
 
     private levelName(): string {
@@ -1195,22 +1232,26 @@ export class BattleGame extends Component {
         const panel = createPanel(root, 'AttackPanel', w, h);
         panel.node.setPosition(x, y, 0);
 
-        this.leftText(panel.node, '攻击色子', -w / 2 + 16, h / 2 - 28, 22, COLOR_TEXT, true);
+        const left = -w / 2 + 16;
+        this.attackTitle = this.leftText(panel.node, '攻击色子', left, h / 2 - 23, 21, COLOR_TEXT, true);
+        this.attackInfo = this.leftText(panel.node, '', left, h / 2 - 49, 13, COLOR_MUTED, false);
 
-        const dieSize = 44;
-        const rowY = 38;
-        const firstX = -w / 2 + 16 + dieSize / 2;
-        this.attackDice = [
-            this.createDie(panel.node, firstX, rowY, dieSize),
-            this.createDie(panel.node, firstX + dieSize + 12, rowY, dieSize),
+        const dieSize = 48;
+        const rowY = 34;
+        const die1 = left + dieSize / 2;
+        const die2 = die1 + dieSize + 14;
+        this.attackFaces = [
+            this.createDie(panel.node, die1, rowY, dieSize),
+            this.createDie(panel.node, die2, rowY, dieSize),
         ];
-        this.attackSum = this.centerText(
-            panel.node, firstX + (dieSize + 12) + dieSize + 30, rowY, 22, COLOR_TEXT, true, '= ?',
-        );
-        this.attackResult = this.leftText(panel.node, '', -w / 2 + 16, -6, 18, COLOR_TEXT, true);
-        this.attackDamage = this.leftText(panel.node, '', -w / 2 + 16, -34, 17, COLOR_TEXT, true);
-        this.attackChance = this.leftText(panel.node, '', -w / 2 + 16, -58, 15, COLOR_MUTED, false);
-        this.attackStatus = this.leftText(panel.node, '', -w / 2 + 16, -84, 14, COLOR_MUTED, false);
+        this.centerText(panel.node, left + dieSize + 7, rowY, 15, COLOR_MUTED, false, 'VS');
+
+        this.attackStatus = this.leftText(panel.node, '', left, -10, 13, COLOR_MUTED, false);
+        this.attackResult = this.leftText(panel.node, '', left, -48, 13, COLOR_TEXT, true);
+        this.attackSwitchButton = createButton(panel.node, 'SwitchAttack', '切换攻击色子', w - 32, 40, () => {
+            this.showSkillPopup('attack');
+        }, 15);
+        this.attackSwitchButton.node.setPosition(0, -h / 2 + 35, 0);
     }
 
     private buildDefensePanel(root: Node): void {
@@ -1218,22 +1259,26 @@ export class BattleGame extends Component {
         const panel = createPanel(root, 'DefensePanel', w, h);
         panel.node.setPosition(x, y, 0);
 
-        this.leftText(panel.node, '防御色子', -w / 2 + 16, h / 2 - 28, 22, COLOR_TEXT, true);
+        const left = -w / 2 + 16;
+        this.defenseTitle = this.leftText(panel.node, '防御色子', left, h / 2 - 23, 21, COLOR_TEXT, true);
+        this.defenseInfo = this.leftText(panel.node, '', left, h / 2 - 49, 13, COLOR_MUTED, false);
 
-        const dieSize = 44;
-        const rowY = 38;
-        const firstX = -w / 2 + 16 + dieSize / 2;
-        this.defenseDice = [
-            this.createDie(panel.node, firstX, rowY, dieSize),
-            this.createDie(panel.node, firstX + dieSize + 12, rowY, dieSize),
+        const dieSize = 48;
+        const rowY = 34;
+        const die1 = left + dieSize / 2;
+        const die2 = die1 + dieSize + 14;
+        this.defenseFaces = [
+            this.createDie(panel.node, die1, rowY, dieSize),
+            this.createDie(panel.node, die2, rowY, dieSize),
         ];
-        this.defenseSum = this.centerText(
-            panel.node, firstX + (dieSize + 12) + dieSize + 30, rowY, 22, COLOR_TEXT, true, '= ?',
-        );
-        this.defenseResult = this.leftText(panel.node, '', -w / 2 + 16, -6, 18, COLOR_TEXT, true);
-        this.defenseValue = this.leftText(panel.node, '', -w / 2 + 16, -34, 17, COLOR_TEXT, true);
-        this.defenseChance = this.leftText(panel.node, '', -w / 2 + 16, -58, 15, COLOR_MUTED, false);
-        this.defenseStatus = this.leftText(panel.node, '', -w / 2 + 16, -84, 14, COLOR_MUTED, false);
+        this.centerText(panel.node, left + dieSize + 7, rowY, 15, COLOR_MUTED, false, 'VS');
+
+        this.defenseStatus = this.leftText(panel.node, '', left, -10, 13, COLOR_MUTED, false);
+        this.defenseResult = this.leftText(panel.node, '', left, -48, 13, COLOR_TEXT, true);
+        this.defenseSwitchButton = createButton(panel.node, 'SwitchDefense', '切换防御色子', w - 32, 40, () => {
+            this.showSkillPopup('defense');
+        }, 15);
+        this.defenseSwitchButton.node.setPosition(0, -h / 2 + 35, 0);
     }
 
     private buildButtons(root: Node): void {
@@ -1258,6 +1303,10 @@ export class BattleGame extends Component {
         );
         this.shopButton.node.setPosition(PANEL.shop.x, PANEL.shop.y, 0);
         this.shopButton.setEnabled(false);
+
+        // 暂停：点一下切换，或者按住空格
+        this.pauseButton = createButton(root, 'PauseButton', '暂停', 120, 56, () => this.togglePause(), 18);
+        this.pauseButton.node.setPosition(PANEL.speed.x, PANEL.speed.y + 78, 0);
     }
 
     /** 点加速按钮：1x -> 1.5x -> 2x -> 3x -> 1x 循环 */
@@ -1308,7 +1357,7 @@ export class BattleGame extends Component {
             const bossRange = level.boss ? `（${level.boss.a}~${level.boss.b} 个普通敌人后）` : '';
             const best = bestProfit(this.records, id);
             const text = `${level.name || id}    难度 ${level.diff}    BOSS ${bossName}${bossRange}`
-                + `\n最高盈利  +${best}`;
+                + `\n最高盈利  ${best >= 0 ? '+' : ''}${best}`;
             const button = createButton(popup.content, `Level-${id}`, text, 620, rowHeight, () => {
                 popup.close();
                 this.startLevel(id);

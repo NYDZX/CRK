@@ -7,13 +7,14 @@ import {
  * 面板与按钮的黑框用 Graphics 画，不需要任何图片资源。
  */
 
-export const COLOR_TEXT = new Color(25, 25, 25, 255);
-export const COLOR_BORDER = new Color(15, 15, 15, 255);
-export const COLOR_PANEL = new Color(255, 255, 255, 255);
-export const COLOR_MUTED = new Color(128, 128, 128, 255);
-export const COLOR_PRESSED = new Color(232, 232, 232, 255);
-export const COLOR_DISABLED_TEXT = new Color(175, 175, 175, 255);
-export const COLOR_DISABLED_BORDER = new Color(185, 185, 185, 255);
+/** 黑底白字：面板用近黑，描边与文字用浅色 */
+export const COLOR_TEXT = new Color(240, 240, 240, 255);
+export const COLOR_BORDER = new Color(225, 225, 225, 255);
+export const COLOR_PANEL = new Color(16, 16, 16, 255);
+export const COLOR_MUTED = new Color(155, 155, 155, 255);
+export const COLOR_PRESSED = new Color(48, 48, 48, 255);
+export const COLOR_DISABLED_TEXT = new Color(105, 105, 105, 255);
+export const COLOR_DISABLED_BORDER = new Color(85, 85, 85, 255);
 
 /** 创建一个 UI 节点（自动挂 UITransform，并设置为 UI_2D 层，否则相机看不见/点不到） */
 export function createUINode(name: string, parent: Node | null): Node {

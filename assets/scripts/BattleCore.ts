@@ -26,12 +26,16 @@ export interface PlayerConfig {
     Agility: number;
     /** 每次防御骰成功时获得的防御值 */
     Def: number;
-    /** 攻击间隙（秒） */
-    Speed: number;
-    /** 攻击骰的表现时间（秒） */
-    Atk_gap: number;
-    /** 防御间隙（秒）：每隔这么久掷一次防御骰 */
-    def_gap: number;
+    /** 玩家自己的「封锁」：防御色子的耐久 */
+    Blockade?: number;
+    /** 能量上限 */
+    Energy?: number;
+    /** 恢复 1 点能量需要的秒数 */
+    Energy_recovery?: number;
+    /** 旧字段：现在按回合算（1 回合 = 1 秒），这些不再使用 */
+    Speed?: number;
+    Atk_gap?: number;
+    def_gap?: number;
 }
 
 /** 掉落物：type 为奖励类型字符串，rate 为 0-1 的掉落概率；BOSS 用 equip 指定装备 id */

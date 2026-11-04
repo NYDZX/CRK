@@ -88,7 +88,8 @@ function warnMissingNumbers(label: string, source: unknown, keys: string[]): voi
     }
 }
 
-const PLAYER_KEYS = ['Hp', 'Sp', 'Atk', 'Agility', 'Def', 'Atk_gap', 'Speed', 'def_gap'];
+const PLAYER_KEYS = ['Hp', 'Sp', 'Atk', 'Agility', 'Def'];
+/** 敌人仍然保留 Speed/Atk_gap（旧字段，现在不影响战斗节奏，但 BOSS 强化会乘在 speed 上） */
 const ENEMY_KEYS = ['Hp', 'Atk', 'Atk_gap', 'Speed', 'Def', 'Agility', 'blockade', 'Gold', 'ExpRate'];
 const LEVEL_KEYS = ['diff', 'Exp'];
 

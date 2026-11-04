@@ -15,7 +15,8 @@ function sanitize(raw: unknown): LevelRecords {
     const table = raw as { [key: string]: unknown };
     for (const key of Object.keys(table)) {
         const value = table[key];
-        if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+        // 现在最高盈利允许是负数（一局都没赚过就会显示负数）
+        if (typeof value === 'number' && Number.isFinite(value)) {
             out[key] = Math.round(value);
         }
     }
@@ -46,11 +47,11 @@ export function bestProfit(records: LevelRecords, levelId: string): number {
     return records[levelId] === undefined ? 0 : records[levelId];
 }
 
-/** 提交一次本局盈亏，只有刷出新纪录才返回 true */
+/** 提交一次本局盈亏，只有刷出新纪录才返回 true（第一次哪怕亏钱也会记下来） */
 export function submitProfit(records: LevelRecords, levelId: string, profit: number): boolean {
-    const prev = bestProfit(records, levelId);
     const value = Math.round(profit);
-    if (value <= prev) return false;
+    const prev = records[levelId];
+    if (prev !== undefined && value <= prev) return false;
     records[levelId] = value;
     return true;
 }

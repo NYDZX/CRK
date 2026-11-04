@@ -44,7 +44,7 @@ export const STRATEGIES: StrategyDef[] = [
     {
         id: 'twoFace',
         name: '二面骰子',
-        desc: '骰子只出 1/6；最大值伤害翻倍，最小值冷却变长',
+        desc: '玩家色子只出最小/最大面值，出最大面值时伤害/防御 ×2',
     },
     {
         id: 'suicide',
